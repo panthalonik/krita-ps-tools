@@ -85,6 +85,12 @@ Testy: python verification/test_clipping_native.py (18 testów, atrapa API Krity
 
 Testy: python verification/test_clipping_native.py (21 testów).
 
+## Wersja en12 — Cofnij po usuwaniu warstw (silnik, łatka `0007`)
+
+- Prawdziwa przyczyna: Krita celowo łączyła operacje na warstwach wykonane w ciągu 0,75 s (usuń, duplikuj, przesuń, w górę/w dół, grupuj) w jeden krok „Remove Nodes”, który trafiał do historii dopiero ok. 2,25 s po ostatniej operacji. Szybkie Delete, Delete, Ctrl+Z przywracało więc wszystkie usunięte warstwy naraz.
+- Teraz, jak w Photoshopie, każda operacja na warstwach to osobny krok Cofnij i od razu pojawia się w historii.
+- Ctrl+Z / Ctrl+Shift+Z wciśnięte, gdy Krita jeszcze kończy operację albo przelicza obraz, nie jest już ignorowane: Krita czeka na koniec pracy (zwykle ułamek sekundy) i cofa dokładnie ostatni krok. Podczas malowania pędzlem i niezakończonych transformacji zostaje zachowanie Krity.
+
 ## Dokumenty ze starszej wersji
 
 Przy pierwszym otwarciu dokumentu wtyczka zamienia „Layer Mask” (lub ukryty magazyn) na maskę przezroczystości z tą samą zawartością, przywraca pełną wbudowaną maskę warstwy i przelicza Blend If. Po zapisaniu taki dokument nie będzie poprawnie obsługiwany przez starszą wersję wtyczki — przed pierwszym użyciem zrób kopię ważnych plików .kra.

@@ -1,0 +1,261 @@
+diff --git a/libs/image/kis_image.cc b/libs/image/kis_image.cc
+index 7d551f0..746da4e 100644
+--- a/libs/image/kis_image.cc
++++ b/libs/image/kis_image.cc
+@@ -786,6 +786,11 @@ bool KisImage::tryBarrierLock(bool readOnly)
+     return result;
+ }
+ 
++bool KisImage::hasOpenedStrokes() const
++{
++    return m_d->scheduler.hasOpenedStrokes();
++}
++
+ bool KisImage::isIdle(bool allowLocked)
+ {
+     return (allowLocked || !locked()) && m_d->scheduler.isIdle();
+diff --git a/libs/image/kis_image.h b/libs/image/kis_image.h
+index 71a7abb..15e2d8e 100644
+--- a/libs/image/kis_image.h
++++ b/libs/image/kis_image.h
+@@ -980,6 +980,9 @@ public:
+ 
+     bool isIdle(bool allowLocked = false);
+ 
++    /// ps_tools: a stroke is still open (see KisUpdateScheduler::hasOpenedStrokes())
++    bool hasOpenedStrokes() const;
++
+     /**
+      * @brief Wait until all the queued background jobs are completed and lock the image.
+      *
+diff --git a/libs/image/kis_update_scheduler.cpp b/libs/image/kis_update_scheduler.cpp
+index 8a37ce5..0d59360 100644
+--- a/libs/image/kis_update_scheduler.cpp
++++ b/libs/image/kis_update_scheduler.cpp
+@@ -306,6 +306,11 @@ void KisUpdateScheduler::unlock(bool resetLodLevels)
+     processQueues();
+ }
+ 
++bool KisUpdateScheduler::hasOpenedStrokes() const
++{
++    return m_d->strokesQueue.hasOpenedStrokes();
++}
++
+ bool KisUpdateScheduler::isIdle()
+ {
+     /**
+diff --git a/libs/image/kis_update_scheduler.h b/libs/image/kis_update_scheduler.h
+index c6ee974..2eda75c 100644
+--- a/libs/image/kis_update_scheduler.h
++++ b/libs/image/kis_update_scheduler.h
+@@ -105,6 +105,13 @@ public:
+      */
+     bool isIdle();
+ 
++    /**
++     * ps_tools: true while a stroke is still open (a brush stroke being
++     * painted, an unfinished transform...), false when everything in the
++     * queues has already been ended and only has to be executed
++     */
++    bool hasOpenedStrokes() const;
++
+     /**
+      * Blocks all the updates from execution. It doesn't affect
+      * strokes execution in any way. This type of lock is supposed
+diff --git a/libs/ui/KisDocument.cpp b/libs/ui/KisDocument.cpp
+index 4569317..1ab8076 100644
+--- a/libs/ui/KisDocument.cpp
++++ b/libs/ui/KisDocument.cpp
+@@ -54,6 +54,7 @@
+ 
+ #include <QTextBrowser>
+ #include <QApplication>
++#include <QThread>
+ #include <QBuffer>
+ #include <QStandardPaths>
+ #include <QDir>
+@@ -219,6 +220,27 @@ private:
+         }
+     }
+ 
++    /**
++     * ps_tools: when only finished work is in the way of Undo/Redo (a layer
++     * operation still being applied, a re-render), wait for it and then
++     * undo, like Photoshop, instead of dropping the key press. The pending
++     * operation reaches the history first, so Ctrl+Z undoes exactly the
++     * last thing the user did. Returns true with the image barrier-locked.
++     * Not done while a stroke is still open (a brush stroke, an unfinished
++     * transform): Krita's own handling stays for those.
++     */
++    bool waitForFinishedWork(KisImageWSP image) {
++        while (!image->hasOpenedStrokes()) {
++            if (image->tryBarrierLock()) {
++                return true;
++            }
++            // GUI events only: some commands need the GUI thread to finish
++            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 5);
++            QThread::yieldCurrentThread();
++        }
++        return false;
++    }
++
+     void undoImpl() {
+         KisImageWSP image = this->image();
+         image->requestUndoDuringStroke();
+@@ -230,6 +252,9 @@ private:
+         if(image->tryBarrierLock()) {
+             KUndo2Stack::undo();
+             image->unlock();
++        } else if (waitForFinishedWork(image)) {
++            KUndo2Stack::undo();
++            image->unlock();
+         }
+     }
+ 
+@@ -240,6 +265,9 @@ private:
+         if(image->tryBarrierLock()) {
+             KUndo2Stack::redo();
+             image->unlock();
++        } else if (waitForFinishedWork(image)) {
++            KUndo2Stack::redo();
++            image->unlock();
+         }
+     }
+ 
+diff --git a/libs/ui/kis_node_manager.cpp b/libs/ui/kis_node_manager.cpp
+index d4528a1..c004ee4 100644
+--- a/libs/ui/kis_node_manager.cpp
++++ b/libs/ui/kis_node_manager.cpp
+@@ -130,6 +130,11 @@ struct KisNodeManager::Private {
+ 
+     void mergeTransparencyMaskAsAlpha(bool writeToLayers);
+     KisNodeJugglerCompressed* lazyGetJuggler(const KUndo2MagicString &actionName);
++    void commitJuggler() {
++        if (nodeJuggler && !nodeJuggler->isEnded()) {
++            nodeJuggler->end();
++        }
++    }
+ };
+ 
+ bool KisNodeManager::Private::activateNodeImpl(KisNodeSP node)
+@@ -543,6 +548,7 @@ void KisNodeManager::moveNodesDirect(KisNodeList nodes, KisNodeSP parent, KisNod
+     KUndo2MagicString actionName = kundo2_i18n("Move Nodes");
+     KisNodeJugglerCompressed *juggler = m_d->lazyGetJuggler(actionName);
+     juggler->moveNode(nodes, parent, aboveThis);
++    juggler->end();
+ }
+ 
+ void KisNodeManager::copyNodesDirect(KisNodeList nodes, KisNodeSP parent, KisNodeSP aboveThis)
+@@ -550,6 +556,7 @@ void KisNodeManager::copyNodesDirect(KisNodeList nodes, KisNodeSP parent, KisNod
+     KUndo2MagicString actionName = kundo2_i18n("Copy Nodes");
+     KisNodeJugglerCompressed *juggler = m_d->lazyGetJuggler(actionName);
+     juggler->copyNode(nodes, parent, aboveThis);
++    juggler->end();
+ }
+ 
+ void KisNodeManager::addNodesDirect(KisNodeList nodes, KisNodeSP parent, KisNodeSP aboveThis)
+@@ -557,6 +564,7 @@ void KisNodeManager::addNodesDirect(KisNodeList nodes, KisNodeSP parent, KisNode
+     KUndo2MagicString actionName = kundo2_i18n("Add Nodes");
+     KisNodeJugglerCompressed *juggler = m_d->lazyGetJuggler(actionName);
+     juggler->addNode(nodes, parent, aboveThis);
++    juggler->end();
+ }
+ 
+ void KisNodeManager::toggleIsolateActiveNode()
+@@ -1058,20 +1066,25 @@ void KisNodeManager::duplicateActiveNode()
+     KUndo2MagicString actionName = kundo2_i18n("Duplicate Nodes");
+     KisNodeJugglerCompressed *juggler = m_d->lazyGetJuggler(actionName);
+     juggler->duplicateNode(selectedNodes());
++    juggler->end();
+ }
+ 
+ KisNodeJugglerCompressed* KisNodeManager::Private::lazyGetJuggler(const KUndo2MagicString &actionName)
+ {
+     KisImageWSP image = view->image();
+ 
+-    if (!nodeJuggler ||
+-            (nodeJuggler &&
+-             (nodeJuggler->isEnded() ||
+-              !nodeJuggler->canMergeAction(actionName)))) {
++    /**
++     * ps_tools: like in Photoshop, every layer operation (delete, duplicate,
++     * move, group...) is one undo step of its own. Krita used to merge the
++     * operations done within 750 ms into one "Remove Nodes" step that reached
++     * the history only ~2 s later, so a quick Delete, Delete, Ctrl+Z brought
++     * back all the deleted layers. The previous operation is finished here
++     * and every caller ends its own right after it is queued.
++     */
++    commitJuggler();
+ 
+-        nodeJuggler = new KisNodeJugglerCompressed(actionName, image, q, 750);
+-        nodeJuggler->setAutoDelete(true);
+-    }
++    nodeJuggler = new KisNodeJugglerCompressed(actionName, image, q, 750);
++    nodeJuggler->setAutoDelete(true);
+ 
+     return nodeJuggler;
+ }
+@@ -1083,6 +1096,7 @@ void KisNodeManager::raiseNode()
+     KUndo2MagicString actionName = kundo2_i18n("Raise Nodes");
+     KisNodeJugglerCompressed *juggler = m_d->lazyGetJuggler(actionName);
+     juggler->raiseNode(selectedNodes());
++    juggler->end();
+ }
+ 
+ void KisNodeManager::lowerNode()
+@@ -1092,6 +1106,7 @@ void KisNodeManager::lowerNode()
+     KUndo2MagicString actionName = kundo2_i18n("Lower Nodes");
+     KisNodeJugglerCompressed *juggler = m_d->lazyGetJuggler(actionName);
+     juggler->lowerNode(selectedNodes());
++    juggler->end();
+ }
+ 
+ void KisNodeManager::removeSingleNode(KisNodeSP node)
+@@ -1112,6 +1127,7 @@ void KisNodeManager::removeSelectedNodes(KisNodeList nodes)
+     KUndo2MagicString actionName = kundo2_i18n("Remove Nodes");
+     KisNodeJugglerCompressed *juggler = m_d->lazyGetJuggler(actionName);
+     juggler->removeNode(nodes);
++    juggler->end();
+ }
+ 
+ void KisNodeManager::removeNode()
+@@ -1578,6 +1594,7 @@ void KisNodeManager::cutLayersToClipboard()
+         KUndo2MagicString actionName = kundo2_i18n("Cut Nodes");
+         KisNodeJugglerCompressed *juggler = m_d->lazyGetJuggler(actionName);
+         juggler->removeNode(nodes);
++        juggler->end();
+     }
+ }
+ 
+@@ -1665,6 +1682,7 @@ void KisNodeManager::createQuickGroup()
+     KisNodeSP above;
+ 
+     createQuickGroupImpl(juggler, "", &parent, &above);
++    juggler->end();
+ }
+ 
+ void KisNodeManager::createQuickClippingGroup()
+@@ -1682,6 +1700,7 @@ void KisNodeManager::createQuickClippingGroup()
+ 
+         juggler->addNode(KisNodeList() << maskLayer, parent, above);
+     }
++    m_d->commitJuggler();
+ }
+ 
+ void KisNodeManager::quickUngroup()
+@@ -1724,6 +1743,7 @@ void KisNodeManager::quickUngroup()
+             KisNodeJugglerCompressed *juggler = m_d->lazyGetJuggler(actionName);
+             juggler->moveNode(nodes, parent, active);
+             juggler->removeNode(KisNodeList() << active);
++            juggler->end();
+         }
+     } else if (parent && parent->parent()) {
+         KisNodeSP grandParent = parent->parent();
+@@ -1739,6 +1759,7 @@ void KisNodeManager::quickUngroup()
+             if (removeParent) {
+                 juggler->removeNode(KisNodeList() << parent);
+             }
++            juggler->end();
+         }
+     }
+ }
