@@ -49,7 +49,7 @@ index a117553..e204eae 100644
  
          QByteArray data;
 diff --git a/libs/psd/psd_layer_section.cpp b/libs/psd/psd_layer_section.cpp
-index 4c776ce..ea95f37 100644
+index 4c776ce..00e5dfd 100644
 --- a/libs/psd/psd_layer_section.cpp
 +++ b/libs/psd/psd_layer_section.cpp
 @@ -51,6 +51,9 @@
@@ -83,7 +83,7 @@ index 4c776ce..ea95f37 100644
 +            out.whiteValues = {{quint8(r.w0), quint8(r.w1)}};
 +            return out;
 +        };
-+        const QPair<Range, Range> neutral(Range(), Range());
++        const QPair<Range, Range> neutral = qMakePair(Range(), Range());
 +        const QPair<Range, Range> used(range(s.self), range(s.under));
 +        record->blendingRanges.compositeGrayRange = s.channel == 0 ? used : neutral;
 +        record->blendingRanges.sourceDestinationRanges.clear();
