@@ -1,0 +1,237 @@
+diff --git a/libs/image/kis_async_merger.cpp b/libs/image/kis_async_merger.cpp
+index 9a55fe91..69b1a36f 100644
+--- a/libs/image/kis_async_merger.cpp
++++ b/libs/image/kis_async_merger.cpp
+@@ -33,6 +33,12 @@
+ 
+ #include "kis_abstract_projection_plane.h"
+ 
++#include <QHash>
++#include <KoColor.h>
++#include "kis_effect_mask.h"
++#include "kis_transparency_mask.h"
++#include "kis_pixel_selection.h"
++
+ 
+ //#define DEBUG_MERGER
+ 
+@@ -165,6 +171,109 @@ private:
+ };
+ 
+ 
++/*********************************************************************/
++/*            Masks on pass-through groups (ps_tools patch)          */
++/*********************************************************************/
++
++/**
++ * Photoshop: a mask on a pass-through group limits where the group's
++ * layers change the image below it. Krita composites the layers of a
++ * pass-through group straight into the parent's projection and drops the
++ * group's masks. Here the masks are honoured:
++ *
++ *  - right before the first layer of such a group is processed, the part of
++ *    the projection that is about to change is saved ("below");
++ *  - the group's own leaf comes right after its last layer (see
++ *    KisProjectionLeaf::nextSibling()); there the projection ("after") is
++ *    blended back over "below" with the product of the group's visible
++ *    transparency masks: result = below + (after - below) * mask.
++ *
++ * The masks are applied with KisMask::apply(), which also takes the stroke
++ * that is being painted on the mask right now (its temporary target) into
++ * account, so the canvas follows the brush.
++ */
++namespace {
++
++struct PassThroughScope {
++    KisPaintDeviceSP below;
++    QRect rect;
++};
++
++typedef QHash<const KisNode*, PassThroughScope> PassThroughScopes;
++
++KisGroupLayer *passThroughGroup(KisNodeSP node)
++{
++    KisGroupLayer *group = qobject_cast<KisGroupLayer*>(node.data());
++    return group && group->passThroughMode() ? group : nullptr;
++}
++
++QList<KisEffectMaskSP> passThroughGroupMasks(const KisGroupLayer *group)
++{
++    QList<KisEffectMaskSP> masks;
++    for (KisNodeSP child = group->firstChild(); child; child = child->nextSibling()) {
++        KisTransparencyMask *mask = qobject_cast<KisTransparencyMask*>(child.data());
++        if (mask && mask->visible()) {
++            masks.append(KisEffectMaskSP(mask));
++        }
++    }
++    return masks;
++}
++
++/// Before a layer is processed: save "below" for each enclosing masked
++/// pass-through group whose first processed layer this is.
++void openPassThroughScopes(KisNodeSP node, const QRect &rect,
++                           KisPaintDeviceSP projection, PassThroughScopes &scopes)
++{
++    for (KisNodeSP parent = node->parent(); parent; parent = parent->parent()) {
++        KisGroupLayer *group = passThroughGroup(parent);
++        if (!group) break;                       // the end of the flattened level
++        if (scopes.contains(group) || !group->visible()) continue;
++        if (passThroughGroupMasks(group).isEmpty()) continue;
++
++        PassThroughScope scope;
++        scope.below = new KisPaintDevice(projection->colorSpace());
++        scope.below->prepareClone(projection);
++        KisPainter::copyAreaOptimized(rect.topLeft(), projection, scope.below, rect);
++        scope.rect = rect;
++        scopes.insert(group, scope);
++    }
++}
++
++/// At the group's own leaf (after its last layer): blend with the mask.
++void closePassThroughScope(KisNodeSP node, const QRect &rect, KisPaintDeviceSP projection,
++                           PassThroughScopes &scopes, KisRenderPassFlags flags)
++{
++    KisGroupLayer *group = passThroughGroup(node);
++    if (!group) return;
++    PassThroughScopes::iterator it = scopes.find(group);
++    if (it == scopes.end()) return;
++    const PassThroughScope scope = it.value();
++    scopes.erase(it);
++
++    const QRect rc = rect & scope.rect;
++    const QList<KisEffectMaskSP> masks = passThroughGroupMasks(group);
++    if (rc.isEmpty() || masks.isEmpty()) return;
++
++    // the product of the masks, as the alpha of an opaque device
++    KisPaintDeviceSP maskDevice = new KisPaintDevice(projection->colorSpace());
++    maskDevice->prepareClone(projection);
++    maskDevice->fill(rc, KoColor(Qt::white, maskDevice->colorSpace()));
++    Q_FOREACH (const KisEffectMaskSP &mask, masks) {
++        mask->apply(maskDevice, rc, rc, KisNode::N_FILTHY, flags);
++    }
++    KisSelectionSP selection = new KisSelection();
++    selection->pixelSelection()->copyAlphaFrom(maskDevice, rc);
++
++    KisPaintDeviceSP after = new KisPaintDevice(projection->colorSpace());
++    after->prepareClone(projection);
++    KisPainter::copyAreaOptimized(rc.topLeft(), projection, after, rc);
++    KisPainter::copyAreaOptimized(rc.topLeft(), scope.below, projection, rc);
++    KisPainter::copyAreaOptimized(rc.topLeft(), after, projection, rc, selection);
++}
++
++} // namespace
++
++
+ /*********************************************************************/
+ /*                     KisAsyncMerger                                */
+ /*********************************************************************/
+@@ -173,6 +282,7 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
+     KisMergeWalker::LeafStack &leafStack = walker.leafStack();
+ 
+     const bool useTempProjections = walker.needRectVaries();
++    PassThroughScopes passThroughScopes;
+ 
+     while(!leafStack.isEmpty()) {
+         KisMergeWalker::JobItem item = leafStack.pop();
+@@ -213,6 +323,12 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
+             setupProjection(currentLeaf, applyRect, useTempProjections);
+         }
+ 
++        if (m_currentProjection) {
++            openPassThroughScopes(currentLeaf->node(), applyRect, m_currentProjection, passThroughScopes);
++            closePassThroughScope(currentLeaf->node(), applyRect, m_currentProjection,
++                                  passThroughScopes, item.m_renderFlags);
++        }
++
+         KisUpdateOriginalVisitor originalVisitor(applyRect,
+                                                  m_currentProjection);
+ 
+diff --git a/libs/image/kis_merge_walker.cc b/libs/image/kis_merge_walker.cc
+index cc37d235..370e5121 100644
+--- a/libs/image/kis_merge_walker.cc
++++ b/libs/image/kis_merge_walker.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "kis_merge_walker.h"
+ #include "kis_projection_leaf.h"
++#include "kis_group_layer.h"
+ 
+ 
+ 
+@@ -64,6 +65,21 @@ void KisMergeWalker::startTripWithMask(KisProjectionLeafSP filthyMask, KisMergeW
+         return;
+     }
+ 
++    /**
++     * ps_tools patch: a mask of a pass-through group is honoured by
++     * KisAsyncMerger (it limits the group's effect), so a change of the
++     * mask is a change of the group: recompose the group's level. (Without
++     * this the walker would only reuse the parent's old projection.)
++     */
++    {
++        KisNodeSP maskParent = filthyMask->node()->parent();
++        KisGroupLayer *group = qobject_cast<KisGroupLayer*>(maskParent.data());
++        if (group && group->passThroughMode()) {
++            startTripImpl(maskParent->projectionLeaf(), flags);
++            return;
++        }
++    }
++
+     adjustMasksChangeRect(filthyMask);
+ 
+     KisProjectionLeafSP nextLeaf = parentLayer->nextSibling();
+diff --git a/libs/ui/kis_node_model.cpp b/libs/ui/kis_node_model.cpp
+index 3438750a..4b5cb99b 100644
+--- a/libs/ui/kis_node_model.cpp
++++ b/libs/ui/kis_node_model.cpp
+@@ -29,6 +29,7 @@
+ #include <kis_paint_layer.h>
+ #include <kis_group_layer.h>
+ #include <kis_projection_leaf.h>
++#include <kis_transparency_mask.h>
+ #include <kis_shape_controller.h>
+ 
+ #include "kis_dummies_facade_base.h"
+@@ -512,6 +513,20 @@ QModelIndex KisNodeModel::sibling(int row, int column, const QModelIndex &idx) c
+     return index(row, column, parent(idx));
+ }
+ 
++namespace {
++/// ps_tools patch: transparency masks of pass-through groups are rendered
++/// (see KisAsyncMerger), so they are not shown as disabled.
++KisProjectionLeaf::NodeDropReason shownDropReason(KisNodeSP node)
++{
++    KisProjectionLeaf::NodeDropReason reason = node->projectionLeaf()->dropReason();
++    if (reason == KisProjectionLeaf::DropPassThroughMask &&
++        qobject_cast<KisTransparencyMask*>(node.data())) {
++        return KisProjectionLeaf::NodeAvailable;
++    }
++    return reason;
++}
++}
++
+ QVariant KisNodeModel::data(const QModelIndex &index, int role) const
+ {
+     if (!m_d->dummiesFacade || !index.isValid() || !m_d->image.isValid()) return QVariant();
+@@ -525,10 +540,10 @@ QVariant KisNodeModel::data(const QModelIndex &index, int role) const
+     case Qt::SizeHintRole: return m_d->image->size(); // FIXME
+     case Qt::ForegroundRole:
+         return belongsToIsolatedGroup(node) &&
+-            !node->projectionLeaf()->isDroppedNode() ? QVariant() : QVariant(QColor(Qt::gray));
++            shownDropReason(node) == KisProjectionLeaf::NodeAvailable ? QVariant() : QVariant(QColor(Qt::gray));
+     case Qt::FontRole: {
+         QFont baseFont;
+-        if (node->projectionLeaf()->isDroppedNode()) {
++        if (shownDropReason(node) != KisProjectionLeaf::NodeAvailable) {
+             baseFont.setStrikeOut(true);
+         }
+         if (m_d->activeNodeIndex == index) {
+@@ -553,7 +568,7 @@ QVariant KisNodeModel::data(const QModelIndex &index, int role) const
+     }
+     case KisNodeModel::DropReasonRole: {
+         QString result;
+-        KisProjectionLeaf::NodeDropReason reason = node->projectionLeaf()->dropReason();
++        KisProjectionLeaf::NodeDropReason reason = shownDropReason(node);
+ 
+         if (reason == KisProjectionLeaf::DropPassThroughMask) {
+             result = i18nc("@info:tooltip", "Disabled: masks on pass-through groups are not supported!");

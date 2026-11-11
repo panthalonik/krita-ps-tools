@@ -11,6 +11,10 @@ masked pass-through group gets "the group's mask" (times the masks of outer
 pass-through groups) written into its built-in mask. The mask the user
 paints stays an ordinary transparency mask on the group.
 
+In Krita PS (core.engine_level() >= 1) the engine itself honours masks of
+pass-through groups, live and for every layer; then this module only undoes
+what it wrote in documents edited with the official Krita.
+
 Limits (Krita's engine would have to change to lift them):
   * the copy is made when a stroke on the mask has ended, not during it;
   * only adjustment layers follow the group's mask - paint layers and
@@ -116,8 +120,30 @@ def _find(doc, key):
     return None
 
 
+def release_all(doc):
+    """Gives the adjustment layers back their full built-in mask (the
+    engine does the masking itself). Returns True when something changed."""
+    mine = controlled(doc)
+    if not mine:
+        return False
+    w, h = doc.width(), doc.height()
+    full = b"\xff" * (w * h)
+    for k in mine:
+        layer = _find(doc, k)
+        if layer is not None and core.is_filter_layer(layer):
+            layer.setPixelData(full, 0, 0, w, h)
+    _save_controlled(doc, set())
+    _states.pop(_doc_key(doc), None)
+    doc.refreshProjection()
+    return True
+
+
 def sync(doc, active=None):
     """Called from the plugin's poll. Returns True when something was written."""
+    if core.engine_level() >= 1:
+        if core.idle(doc):
+            return release_all(doc)
+        return False
     key = _doc_key(doc)
     st = _states.get(key)
     if st is None:

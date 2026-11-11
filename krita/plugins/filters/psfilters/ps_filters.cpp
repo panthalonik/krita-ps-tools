@@ -4,6 +4,7 @@
 #include "ps_filters.h"
 
 #include <QByteArray>
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QHash>
 #include <QMutex>
@@ -26,9 +27,18 @@
 
 K_PLUGIN_FACTORY_WITH_JSON(KritaPsFiltersFactory, "kritapsfilters.json", registerPlugin<KritaPsFilters>();)
 
+/// Read by the ps_tools Python plugin: QApplication.instance().property(
+/// "ps_tools_engine"). This plugin is only built together with the engine
+/// patches (krita/patches), so the value also says which of them are in:
+///   1 = C++ filters + native masks on pass-through groups
+static const int PS_TOOLS_ENGINE_LEVEL = 1;
+
 KritaPsFilters::KritaPsFilters(QObject *parent, const QVariantList &)
     : QObject(parent)
 {
+    if (QCoreApplication::instance()) {
+        QCoreApplication::instance()->setProperty("ps_tools_engine", PS_TOOLS_ENGINE_LEVEL);
+    }
     KisFilterRegistry::instance()->add(KisFilterSP(new KisFilterPsColorLookup()));
     KisFilterRegistry::instance()->add(KisFilterSP(new KisFilterPsSelectiveColor()));
     KisFilterRegistry::instance()->add(KisFilterSP(new KisFilterPsBlendIf()));

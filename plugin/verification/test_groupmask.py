@@ -172,6 +172,38 @@ class GroupMask(Base):
         self.assertEqual(self.bc.pixels, self.M)
 
 
+class NativeEngine(Base):
+    """Krita PS: the engine masks pass-through groups itself."""
+
+    def tearDown(self):
+        core.engine_level = self._old
+
+    def setUp(self):
+        Base.setUp(self)
+        self._old = core.engine_level
+
+    def test_nothing_is_written(self):
+        core.engine_level = lambda: 1
+        m = self.mask(self.group)
+        self.assertFalse(groupmask.sync(self.doc, m))
+        self.assertEqual(self.bc.pixels, self.full)
+
+    def test_document_from_official_krita_is_released(self):
+        core.engine_level = lambda: 0
+        m = self.mask(self.group)
+        groupmask.sync(self.doc, m)
+        self.assertEqual(self.bc.pixels, self.M)
+        core.engine_level = lambda: 1                  # opened in Krita PS
+        self.assertTrue(groupmask.sync(self.doc, m))
+        self.assertEqual(self.bc.pixels, self.full)
+        self.assertEqual(self.lv.pixels, self.full)
+        self.assertEqual(groupmask.controlled(self.doc), set())
+        self.assertFalse(groupmask.sync(self.doc, m))
+        core.engine_level = lambda: 0                  # back in the official Krita
+        self.assertTrue(groupmask.sync(self.doc, m))
+        self.assertEqual(self.bc.pixels, self.M)
+
+
 class RemoveMask(Base):
     def test_finds_the_thumbnail_mask(self):
         self.assertIsNone(masks.layer_mask(self.bg))

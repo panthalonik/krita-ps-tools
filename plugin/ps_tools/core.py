@@ -247,6 +247,18 @@ def nodes_at_and_above(layer):
     return res
 
 
+def engine_level():
+    """0 in the official Krita; in Krita PS (this repository's build) the
+    level of the C++ additions (see krita/plugins/filters/psfilters):
+    1 = C++ filters + native masks on pass-through groups."""
+    try:
+        from PyQt5.QtWidgets import QApplication
+        v = QApplication.instance().property("ps_tools_engine")
+        return int(v) if v is not None else 0
+    except Exception:
+        return 0
+
+
 def idle(doc):
     """True when nothing is being painted / transformed right now."""
     from PyQt5.QtCore import Qt
