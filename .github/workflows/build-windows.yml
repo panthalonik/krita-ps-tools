@@ -80,10 +80,8 @@ jobs:
       - name: Plugin zip (import in Krita with Tools > Scripts > Import Python Plugin from File)
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force C:\kb\plugin\ps_tools | Out-Null
-          Copy-Item -Recurse plugin\ps_tools\* C:\kb\plugin\ps_tools\
-          Copy-Item plugin\ps_tools.desktop, plugin\ps_tools.action C:\kb\plugin\
-          Compress-Archive -Path C:\kb\plugin\* -DestinationPath C:\kb\out\ps_tools_plugin.zip -Force
+          python ci\make_plugin_zip.py C:\kb\out\ps_tools_plugin.zip
+          python ci\check_plugin_zip.py C:\kb\krita\plugins\python\plugin_importer\plugin_importer.py C:\kb\out\ps_tools_plugin.zip
 
       - name: Publish release
         shell: pwsh

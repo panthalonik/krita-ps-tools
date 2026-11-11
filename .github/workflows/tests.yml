@@ -24,6 +24,11 @@ jobs:
         run: |
           cd plugin
           for t in verification/test_*.py; do echo "== $t"; python "$t"; done
+      - name: Plugin zip accepted by Krita's importer
+        run: |
+          python ci/make_plugin_zip.py /tmp/ps_tools_plugin.zip
+          curl -sSfL -o /tmp/plugin_importer.py https://raw.githubusercontent.com/KDE/krita/bd6e8d061d2f0388c5b10278786cf0fe62e3135f/plugins/python/plugin_importer/plugin_importer.py
+          python ci/check_plugin_zip.py /tmp/plugin_importer.py /tmp/ps_tools_plugin.zip
       - name: C++ kernel tests
         run: |
           python krita/plugins/filters/psfilters/tests/gen_reference.py plugin/ps_tools /tmp/vectors
