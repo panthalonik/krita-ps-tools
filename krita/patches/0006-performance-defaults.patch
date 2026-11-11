@@ -1,0 +1,16 @@
+diff --git a/libs/ui/kis_config.cc b/libs/ui/kis_config.cc
+index fc5db2a..9c3d8d9 100644
+--- a/libs/ui/kis_config.cc
++++ b/libs/ui/kis_config.cc
+@@ -1938,7 +1938,10 @@ void KisConfig::setFavoritePresets(const int value)
+ 
+ bool KisConfig::levelOfDetailEnabled(bool defaultValue) const
+ {
+-    return (defaultValue ? false : m_cfg.readEntry("levelOfDetailEnabled", false));
++    // ps_tools patch: Instant Preview on by default (large brushes, filters
++    // and transforms are previewed at a lower resolution first, then
++    // finished) - a setting the user chose is kept
++    return (defaultValue ? true : m_cfg.readEntry("levelOfDetailEnabled", true));
+ }
+ 
+ void KisConfig::setLevelOfDetailEnabled(bool value)
