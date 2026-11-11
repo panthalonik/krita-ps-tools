@@ -40,10 +40,9 @@ def pixels(dtype, scale):
 
 
 def lut_blob(lut):
-    d1 = array("f", lut.data1d) if lut.data1d is not None else array("f")
-    d3 = array("f", lut.data) if lut.size else array("f")
-    return (b"PSL1" + struct.pack("<ii", lut.size, lut.size1d if lut.data1d is not None else 0)
-            + struct.pack("<6f", *(list(lut.dmin) + list(lut.dmax))) + d1.tobytes() + d3.tobytes())
+    # the plugin's own packer (what it hands to the C++ filter in Krita PS),
+    # so test_kernels.cpp also checks the wire format end to end
+    return luts.psl1_blob(lut)
 
 
 cases = []

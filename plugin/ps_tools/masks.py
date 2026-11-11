@@ -216,6 +216,14 @@ def maintain(doc, active=None):
         from . import groupmask
         if core.migrate_legacy_masks(doc, skip=groupmask.controlled(doc)):
             changed = True
+        # Krita PS: computed Color Lookup / Selective Color layers -> live
+        # filter layers (rendered by Krita, no re-computing)
+        from . import adjustments
+        try:
+            if adjustments.convert_baked_layers(doc):
+                changed = True
+        except Exception:
+            pass
     _ticks[0] += 1
     if first or _ticks[0] % FULL_SCAN_EVERY == 0:
         for layer in core.iter_layers(doc.rootNode()):

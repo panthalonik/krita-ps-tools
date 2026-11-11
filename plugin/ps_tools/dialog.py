@@ -177,18 +177,39 @@ class BlendIfSession(object):
         self.created = False
         self.initial = (core.BlendIfSettings.from_name(self.mask.name())
                         if self.mask is not None else None) or core.BlendIfSettings()
+        # Krita PS: the engine renders Blend If live - no pixels to capture
+        self.native = core.native_blend_if()
+        self.initial_visible = self.mask.visible() if self.mask is not None else True
         w, h = doc.width(), doc.height()
         self.backup = (self.mask.pixelData(0, 0, w, h)
-                       if self.mask is not None else None)
-        self.this_src = core.capture_this(doc, layer, self.mask)
+                       if self.mask is not None and not self.native else None)
+        self.this_src = None if self.native else core.capture_this(doc, layer, self.mask)
         self.under_src = None
 
     def recapture(self):
+        if self.native:
+            return
         self.this_src = core.capture_this(self.doc, self.layer, self.mask)
         if self.under_src is not None:
             self.under_src = core.capture_under(self.doc, self.layer)
 
+    def _apply_native(self, s):
+        if self.mask is None:
+            if s.is_neutral():
+                return
+            self.mask = core.create_blendif_mask(self.doc, self.layer, s)
+            self.created = True
+            return
+        core.ensure_mask_blending(self.layer)
+        if self.mask.name() != s.to_name():
+            self.mask.setName(s.to_name())     # the engine redraws the layer
+        if not self.mask.visible():
+            self.mask.setVisible(True)
+
     def apply(self, s):
+        if self.native:
+            self._apply_native(s)
+            return
         if s.is_neutral() and self.mask is None:
             return
         if s.uses_under() and self.under_src is None:
@@ -205,6 +226,19 @@ class BlendIfSession(object):
 
     def finish(self, accepted, s):
         doc = self.doc
+        if self.native:
+            if accepted:
+                if self.mask is not None and s.is_neutral():
+                    self.mask.remove()
+                elif self.mask is not None:
+                    self._apply_native(s)
+            elif self.created and self.mask is not None:
+                self.mask.remove()
+            elif self.mask is not None:
+                self.mask.setName(self.initial.to_name())
+                self.mask.setVisible(self.initial_visible)
+            doc.setActiveNode(self.layer)
+            return
         if accepted:
             if self.mask is not None:
                 if s.is_neutral():
@@ -224,7 +258,8 @@ class BlendIfSession(object):
             self.mask.remove()
             self.mask = None
         self.doc.setActiveNode(self.layer)
-        core.refresh(self.doc)
+        if not self.native:
+            core.refresh(self.doc)
 
 
 class BlendIfDialog(QDialog):
@@ -271,6 +306,10 @@ class BlendIfDialog(QDialog):
         btn_refresh = QPushButton(u"Refresh pixels")
         btn_refresh.setToolTip(u"Re-read the layer pixels (e.g. after painting).")
         btn_reset = QPushButton(u"Reset")
+        if session.native:
+            # rendered live by the engine: nothing to re-read
+            btn_refresh.hide()
+            self.preview.hide()
         opts.addWidget(btn_refresh)
         opts.addWidget(btn_reset)
         root.addLayout(opts)

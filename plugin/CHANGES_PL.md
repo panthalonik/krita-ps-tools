@@ -50,6 +50,19 @@ Testy: python verification/test_groupmask.py (14 testów, atrapa API Krity).
 
 Testy: python verification/test_maskdrag.py (10 testów z prawdziwymi widżetami Qt).
 
+## Wersja en9 — Blend If, Color Lookup i Selective Color na żywo (Krita PS)
+
+Dotyczy Krita PS (build z tego repozytorium). W oficjalnej Kricie wtyczka działa jak dotąd.
+
+- Blend If jest liczony przez silnik w trakcie składania obrazu (łatka `krita/patches/0002`): dla każdego piksela z koloru warstwy („This Layer”) i z tego, co jest pod nią w danej chwili („Underlying Layer”), jak w Photoshopie. Nie ma już kopii obrazu ani przeliczania po zakończeniu pociągnięcia — malowanie pod warstwą, na niej i ruch suwaków w oknie Blend If widać od razu.
+- Ustawienia zostają w nazwie maski „Blend If (...)”, więc pliki .kra są zgodne w obie strony. W Krita PS piksele tej maski są pomijane; w oficjalnej Kricie wtyczka nadal je wylicza.
+- Color Lookup i Selective Color to prawdziwe warstwy filtrów (filtry C++ `pscolorlookup`, `psselectivecolor`). Krita renderuje je na żywo jak każdą inną korekcję. Tablica LUT jest zapisana w warstwie, więc plik otwiera się na innym komputerze bez pliku LUT. Takie warstwy wymagają Krita PS.
+- Stare, wyliczane warstwy Color Lookup / Selective Color są przy pierwszym otwarciu dokumentu zamieniane na warstwy filtrów (nazwa, krycie, tryb mieszania, widoczność, clipping i maski zostają). Warstwa, której pliku LUT nie da się znaleźć, zostaje po staremu. Zamiana to kilka kroków w historii Cofnij.
+- Zmiana ustawień korekcji z panelu Properties nie blokuje już programu pełnym przerysowaniem obrazu: warstwa filtra odświeża się sama, asynchronicznie (łatka `krita/patches/0003`).
+- Auto-odświeżanie w Krita PS nie ma nic do roboty (chyba że w dokumencie została stara warstwa bez pliku LUT).
+
+Testy: python verification/test_native.py (14 testów, atrapa API Krity); testy kerneli C++ sprawdzają teraz także format tablicy LUT tworzony przez wtyczkę.
+
 ## Dokumenty ze starszej wersji
 
 Przy pierwszym otwarciu dokumentu wtyczka zamienia „Layer Mask” (lub ukryty magazyn) na maskę przezroczystości z tą samą zawartością, przywraca pełną wbudowaną maskę warstwy i przelicza Blend If. Po zapisaniu taki dokument nie będzie poprawnie obsługiwany przez starszą wersję wtyczki — przed pierwszym użyciem zrób kopię ważnych plików .kra.

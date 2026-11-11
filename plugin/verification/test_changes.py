@@ -47,9 +47,9 @@ class Timer:
 def scheduler_class():
  tree=ast.parse((ROOT/'ps_tools/props_docker.py').read_text())
  cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and any(isinstance(m,ast.FunctionDef) and m.name=='_apply_pending' for m in n.body))
- methods=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in ['_edited','_apply_pending']]
+ methods=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in ['_edited','_apply_pending','_apply_delay']]
  mod=ast.Module(body=[ast.ClassDef(name='Scheduler',bases=[],keywords=[],body=methods,decorator_list=[])],type_ignores=[])
- ns={'A':types.SimpleNamespace(BAKED_KINDS=('baked',)), 'core':types.SimpleNamespace()};exec(compile(ast.fix_missing_locations(mod),'<actual scheduler>','exec'),ns)
+ ns={'A':types.SimpleNamespace(BAKED_KINDS=('baked',),is_baked_node=lambda n,k:k=='baked'), 'core':types.SimpleNamespace()};exec(compile(ast.fix_missing_locations(mod),'<actual scheduler>','exec'),ns)
  return ns['Scheduler']
 
 class SchedulingTests(unittest.TestCase):
@@ -89,7 +89,7 @@ class CacheTests(unittest.TestCase):
    def colorModel(self):return 'RGBA'
    def colorDepth(self):return 'U8'
   ns={'core':types.SimpleNamespace(node_key=lambda n:'node',bytes_per_pixel=lambda *a:4,
-       refresh=lambda d:None,find_blendif_mask=lambda n:None),
+       refresh=lambda d:None,find_blendif_mask=lambda n:None,native_blend_if=lambda:False),
       '_under_cache':{},'CACHE_LIMIT':16,'is_neutral':lambda *a:False,
       'capture_under_raw':lambda *a,**k:bytes(16),'compute':lambda *a:bytearray(16)}
   exec(compile(ast.Module(body=selected,type_ignores=[]),'<actual render>','exec'),ns)

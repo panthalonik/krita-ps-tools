@@ -175,7 +175,8 @@ def render(doc, node, kind, params, use_cache=False, under=None):
     except Exception:
         pass
     # Blend If on this layer depends on both its pixels and what is below
-    mask = core.find_blendif_mask(node)
+    # (Krita PS: done live by the engine)
+    mask = None if core.native_blend_if() else core.find_blendif_mask(node)
     if mask is not None:
         s = core.BlendIfSettings.from_name(mask.name())
         if s is not None and not s.is_neutral():

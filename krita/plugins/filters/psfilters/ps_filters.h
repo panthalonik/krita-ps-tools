@@ -25,8 +25,10 @@ public:
     ~KritaPsFilters() override;
 };
 
-/// Properties: "lut" (byte array: qCompress'ed "PSL1" table, see ps_kernels.h),
-/// "linear" (bool), "name" (string, for the user interface only).
+/// Properties: "lut" (byte array: qCompress'ed "PSL1" table, see ps_kernels.h,
+/// or that as base64 text), "lut_id" (optional: any text that changes with the
+/// table, used as the cache key), "linear" (bool), "name" (string, for the
+/// user interface only).
 class KisFilterPsColorLookup : public KisColorTransformationFilter
 {
 public:

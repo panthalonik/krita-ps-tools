@@ -2,6 +2,11 @@
 """Automatic refresh of everything that depends on other pixels:
 Blend If masks and baked adjustment layers (Color Lookup, Selective Color).
 
+Only needed in the official Krita. In Krita PS the engine renders Blend If,
+Color Lookup and Selective Color live (C++ filters + patches/0002), so there
+is nothing to refresh - only baked layers of old documents that could not be
+converted to native ones (LUT file missing) still go through here.
+
 How it stays cheap and out of the way:
   * every poll it builds a signature of the layer stack from Krita's cached
     layer thumbnails (Krita only re-renders a thumbnail when the layer really
@@ -106,10 +111,16 @@ def dependents(doc):
     baked_keys = {}
     for layer, kind, params in baked.iter_baked(doc):
         baked_keys[core.node_key(layer)] = (layer, ("baked", (kind, params)))
+    # Krita PS: Blend If is rendered live by the engine, never refreshed here
+    native = core.native_blend_if()
+    if native and not baked_keys:
+        return out
     for layer in core.iter_layers(doc.rootNode()):
         key = core.node_key(layer)
         if key in baked_keys:
             out.append(baked_keys[key])
+            continue
+        if native:
             continue
         mask = core.find_blendif_mask(layer)
         if mask is None:

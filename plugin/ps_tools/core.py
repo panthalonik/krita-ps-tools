@@ -7,6 +7,10 @@ The result goes into a regular transparency mask whose name starts with
 "Blend If (...)" - the layer pixels are never modified. This is the same for
 paint, group and adjustment (filter) layers.
 Settings are stored in the mask name, so they survive saving to .kra.
+
+In Krita PS (native_blend_if()) the compositing engine does Blend If itself,
+live, exactly like Photoshop; the mask then only carries the settings (its
+name) and nothing here captures or computes pixels.
 """
 import re
 
@@ -250,13 +254,22 @@ def nodes_at_and_above(layer):
 def engine_level():
     """0 in the official Krita; in Krita PS (this repository's build) the
     level of the C++ additions (see krita/plugins/filters/psfilters):
-    1 = C++ filters + native masks on pass-through groups."""
+    1 = C++ filters + native masks on pass-through groups,
+    2 = + Blend If in the compositing engine."""
     try:
         from PyQt5.QtWidgets import QApplication
         v = QApplication.instance().property("ps_tools_engine")
         return int(v) if v is not None else 0
     except Exception:
         return 0
+
+
+def native_blend_if():
+    """Krita PS: the engine itself fades the layer while compositing it
+    (live, from the real pixels of the layer and of what is below it). The
+    "Blend If (...)" mask then only carries the settings in its name - its
+    pixels are not used and the plugin computes nothing."""
+    return engine_level() >= 2
 
 
 def idle(doc):
@@ -628,7 +641,36 @@ def write_mask(doc, mask, data, do_refresh=True):
 def create_blendif_mask(doc, layer, settings):
     ensure_mask_blending(layer)             # before the mask exists: no hole
     mask = doc.createTransparencyMask(settings.to_name())
+    if native_blend_if():
+        # the engine ignores the pixels; white keeps the thumbnail honest
+        try:
+            from krita import Selection
+            sel = Selection()
+            sel.select(0, 0, doc.width(), doc.height(), 255)
+            mask.setSelection(sel)
+        except Exception:
+            pass
     layer.addChildNode(mask, None)
+    return mask
+
+
+def set_native_settings(doc, layer, settings):
+    """Krita PS: stores the settings in the layer's Blend If mask (created
+    when needed). Renaming the mask is enough - the engine updates the
+    canvas by itself. Neutral settings remove the mask."""
+    mask = find_blendif_mask(layer)
+    if settings.is_neutral():
+        if mask is not None:
+            mask.remove()
+        return None
+    if mask is None:
+        return create_blendif_mask(doc, layer, settings)
+    ensure_mask_blending(layer)
+    name = settings.to_name()
+    if mask.name() != name:
+        mask.setName(name)
+    if not mask.visible():
+        mask.setVisible(True)
     return mask
 
 
@@ -653,6 +695,9 @@ def remove_blendif(doc, layer):
 
 def apply_settings(doc, layer, settings, this_src=None, under_src=None):
     """One-off recompute (e.g. refresh) - without the dialog."""
+    if native_blend_if():
+        set_native_settings(doc, layer, settings)
+        return
     mask = find_blendif_mask(layer)
     if settings.is_neutral():
         remove_blendif(doc, layer)
@@ -680,7 +725,11 @@ def iter_layers(node):
 
 
 def refresh_all(doc):
-    """Recomputes all Blend If masks in the document. Returns their count."""
+    """Recomputes all Blend If masks in the document. Returns their count.
+    (Krita PS: nothing to compute, the engine is always up to date.)"""
+    if native_blend_if():
+        return sum(1 for layer in iter_layers(doc.rootNode())
+                   if find_blendif_mask(layer) is not None)
     count = 0
     for layer in list(iter_layers(doc.rootNode())):
         mask = find_blendif_mask(layer)

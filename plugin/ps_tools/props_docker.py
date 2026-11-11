@@ -1091,7 +1091,13 @@ class PropertiesDocker(DockWidget):
         # Throttle instead of debounce: continuous dragging must not postpone
         # preview forever. Only the most recent settings are kept.
         if not self._applying and not self.apply_timer.isActive():
-            self.apply_timer.start(120 if self.kind in A.BAKED_KINDS else 30)
+            self.apply_timer.start(self._apply_delay())
+
+    def _apply_delay(self):
+        # a computed (baked) layer re-renders the whole image in Python;
+        # everything else - Krita PS Color Lookup / Selective Color included -
+        # is a live filter layer
+        return 120 if A.is_baked_node(self.node, self.kind) else 30
 
     def _apply_pending(self):
         if self._applying:
@@ -1105,7 +1111,7 @@ class PropertiesDocker(DockWidget):
             core._preview_busy -= 1
             self._applying = False
             if self.pending is not None and not self.apply_timer.isActive():
-                self.apply_timer.start(120 if self.kind in A.BAKED_KINDS else 30)
+                self.apply_timer.start(self._apply_delay())
 
     def _apply_pending_now(self):
         node, doc, kind = self._pending_target or (self.node, self.doc, self.kind)
@@ -1124,7 +1130,8 @@ class PropertiesDocker(DockWidget):
         except RuntimeError:  # deleted C++ wrapper
             return
         from . import baked
-        if kind in A.BAKED_KINDS:
+        baked_node = A.is_baked_node(node, kind)
+        if baked_node:
             QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             if kind in A.KINDS:
@@ -1144,13 +1151,13 @@ class PropertiesDocker(DockWidget):
         except Exception:
             traceback.print_exc()
         finally:
-            if kind in A.BAKED_KINDS:
+            if baked_node:
                 QApplication.restoreOverrideCursor()
                 from . import autorefresh
                 autorefresh.rebaseline(doc)
         self.snapshot = self._snap(node)
-        if kind in A.BAKED_KINDS:
-            return            # render() already updated Blend If
+        if baked_node or core.native_blend_if():
+            return            # render() / the engine already updated Blend If
         mask = core.find_blendif_mask(node)
         if mask is not None:
             s = core.BlendIfSettings.from_name(mask.name())

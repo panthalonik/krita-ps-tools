@@ -4,7 +4,8 @@
 <b>Alt + drag</b> half of a slider to split it for a smooth transition. The canvas updates live while you drag.</p>
 <ul>
 <li>The effect is a transparency mask named <code>Blend If (…)</code>. Its settings are stored in the name, so don't rename it or paint on it.</li>
-<li><b>Auto-refresh</b>: when you paint (or change, show/hide, move layers) below or on a layer with Blend If, the plugin recomputes it by itself right after you lift the pen (about 0.3 s) – never during a stroke or while a dialog is open. Only what the result really depends on triggers it: the layer's own pixels for <i>This Layer</i>, anything below it for <i>Underlying Layer</i>; painting the layer's own mask or layers above it does not. The image below is rendered on a hidden copy of the document, so the canvas does not flash. Layers above a Color Lookup / Selective Color layer don't show a stroke made below it until you lift the pen. Turn it off in <i>Tools → Scripts → Auto-refresh Blend If / Adjustments</i>. <i>Tools → Scripts → Refresh Blend If / Adjustments</i> refreshes everything at once.</li>
+<li><b>Krita PS</b>: Blend If is part of the compositing engine – it is computed while the image is drawn, from the real pixels of the layer and of everything below it, exactly like Photoshop. It updates live while you paint or move the sliders, and nothing below needs refreshing (the auto-refresh described next is only used in the official Krita).</li>
+<li><b>Auto-refresh</b> (official Krita): when you paint (or change, show/hide, move layers) below or on a layer with Blend If, the plugin recomputes it by itself right after you lift the pen (about 0.3 s) – never during a stroke or while a dialog is open. Only what the result really depends on triggers it: the layer's own pixels for <i>This Layer</i>, anything below it for <i>Underlying Layer</i>; painting the layer's own mask or layers above it does not. The image below is rendered on a hidden copy of the document, so the canvas does not flash. Layers above a Color Lookup / Selective Color layer don't show a stroke made below it until you lift the pen. Turn it off in <i>Tools → Scripts → Auto-refresh Blend If / Adjustments</i>. <i>Tools → Scripts → Refresh Blend If / Adjustments</i> refreshes everything at once.</li>
 <li>Supports 8- and 16-bit RGB and Grayscale images.</li>
 </ul>
 
@@ -36,7 +37,8 @@ Gradient, Pattern and Gradient Map open Krita's own editor.</p>
 </ul>
 
 <p><b>Color Lookup</b> (3D LUTs: <code>.cube</code>, <code>.3dl</code>, <code>.look</code>) and <b>Selective Color</b> (Reds … Blacks, Cyan/Magenta/Yellow/Black, Relative/Absolute – the Photoshop formula).
-Krita has no filters for these, so the plugin computes them: the layer is a paint layer whose pixels are made from the image below it, and it is recomputed automatically when something below changes (see Auto-refresh above).
+In Krita PS these are real filter layers (C++ filters) – rendered live by Krita like any other adjustment, with the LUT stored in the layer itself (the .kra opens on another computer without the LUT file). Layers made in the official Krita are converted automatically when the document is opened. Such documents need Krita PS for these layers.
+In the official Krita there are no filters for these, so the plugin computes them: the layer is a paint layer whose pixels are made from the image below it, and it is recomputed automatically when something below changes (see Auto-refresh above).
 Opacity, blend modes, masks, clipping and Blend If work as on any layer. Don't paint on these layers – the next refresh replaces their pixels.</p>
 <ul>
 <li>LUT list: the LUTs bundled with the plugin, Photoshop's <code>Presets\3DLUTs</code> folder (found automatically) and your own folders (<i>LUT folders…</i> in the panel). <i>Load 3D LUT…</i> opens any file (its folder is added to the list).</li>

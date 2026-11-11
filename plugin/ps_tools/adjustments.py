@@ -67,12 +67,17 @@ KINDS = {
     "solid_color": (u"Color Fill", "fill", "color"),
     "gradient": (u"Gradient Fill", "fill", "gradient"),
     "pattern": (u"Pattern Fill", "fill", "pattern"),
-    # computed by the plugin (paint layer re-rendered from the image below)
+    # Krita PS: real filter layers (C++ filters, see NATIVE_FILTERS).
+    # Official Krita: computed by the plugin (a paint layer re-rendered from
+    # the image below, see baked.py)
     "color_lookup": (u"Color Lookup", "baked", None),
     "selective_color": (u"Selective Color", "baked", None),
 }
 
 BAKED_KINDS = ("color_lookup", "selective_color")
+
+# kind -> filter of krita/plugins/filters/psfilters (only in Krita PS)
+NATIVE_FILTERS = {"color_lookup": "pscolorlookup", "selective_color": "psselectivecolor"}
 SELECTIVE_RANGES = ["reds", "yellows", "greens", "cyans", "blues", "magentas",
                     "whites", "neutrals", "blacks"]
 
@@ -82,6 +87,7 @@ FILTER_TO_KIND = {
     "colorbalance": "color_balance", "desaturate": "black_white", "invert": "invert",
     "posterize": "posterize", "threshold": "threshold", "gradientmap": "gradient_map",
     "noise": "grain", "unsharp": "clarity",
+    "pscolorlookup": "color_lookup", "psselectivecolor": "selective_color",
 }
 
 PHOTO_FILTERS = [
@@ -125,6 +131,87 @@ def defaults(kind):
                                 [(r, [0, 0, 0, 0]) for r in SELECTIVE_RANGES]),
     }
     return json.loads(json.dumps(d.get(kind, {})))
+
+
+# ------------------------------------------------------- native PS filters
+def native_filters():
+    """True in Krita PS: Color Lookup and Selective Color are real filter
+    layers there, rendered live by Krita like any other adjustment."""
+    if core.engine_level() < 1:
+        return False
+    try:
+        names = Krita.instance().filters()
+    except Exception:
+        return False
+    return all(f in names for f in NATIVE_FILTERS.values())
+
+
+def layer_kind(kind):
+    """(layer type, krita filter id) a NEW layer of this kind is made of."""
+    title, ltype, kid = KINDS[kind]
+    if ltype == "baked" and native_filters():
+        return "filter", NATIVE_FILTERS[kind]
+    return ltype, kid
+
+
+def is_baked_node(node, kind=None):
+    """A computed paint layer (official Krita, or a document from it)."""
+    if node is None or node.type() != "paintlayer":
+        return False
+    return kind in BAKED_KINDS if kind is not None else True
+
+
+def _lut_props(p):
+    """Properties of the C++ Color Lookup filter for params."""
+    from . import baked, lutfile
+    if not (p.get("lut") or p.get("name")):
+        return {"lut": "", "lut_id": "", "linear": False, "name": ""}
+    path = baked.resolve_lut(p)
+    if not path:
+        raise baked.BakeError(u"LUT file not found: %s\nChoose it again in the Properties "
+                              u"panel (or add its folder with \"Choose LUT folder…\")."
+                              % (p.get("name") or p.get("lut")))
+    try:
+        lut = lutfile.load(path)
+        text, lut_id = lutfile.filter_property(lut)
+        return {"lut": text, "lut_id": lut_id,
+                "linear": bool(lutfile.is_linear(lut, path)),
+                "name": p.get("name") or lut.title}
+    except lutfile.LutError as e:
+        raise baked.BakeError(str(e))
+
+
+def _selective_props(p):
+    from . import pixelops
+    values = pixelops.adj_vector(p)                       # -1..1
+    return {"values": ",".join(_f(round(v * 100.0, 4)) for v in values),
+            "relative": p.get("method", "relative") == "relative"}
+
+
+def _native_params(node, kind):
+    """Params read back from a native filter layer's own configuration
+    (a layer without plugin data, e.g. duplicated)."""
+    p = defaults(kind)
+    try:
+        props = node.filter().configuration().properties()
+    except Exception:
+        return p
+    if kind == "color_lookup":
+        p["name"] = props.get("name") or ""
+    else:
+        try:
+            vals = [float(x) for x in str(props.get("values") or "").split(",")]
+        except ValueError:
+            vals = []
+        if len(vals) == 36:
+            from . import pixelops
+            for i, r in enumerate(pixelops.RANGES):
+                p[r] = [int(round(v)) for v in vals[i * 4:i * 4 + 4]]
+        rel = props.get("relative", True)
+        if isinstance(rel, str):
+            rel = rel.lower() not in ("false", "0")
+        p["method"] = "relative" if rel else "absolute"
+    return p
 
 
 # ------------------------------------------------------------ annotation store
@@ -358,6 +445,10 @@ def build_props(doc, kind, p):
                  "threshold": 0, "lightnessOnly": True}
     elif kind == "gradient_map":
         props = {"gradientXML": bw_gradient_xml()} if not p.get("_keep") else {}
+    elif kind == "color_lookup":
+        props = _lut_props(p)
+    elif kind == "selective_color":
+        props = _selective_props(p)
     elif kind == "solid_color":
         props = {"color": QColor(p["color"])}
     elif kind == "photo_filter":
@@ -379,7 +470,7 @@ def params_from_node(doc, node, kind):
             return p
     p = defaults(kind)
     if kind in BAKED_KINDS:
-        return p
+        return _native_params(node, kind) if node.type() == "filterlayer" else p
     try:
         props = (node.filter().configuration().properties() if node.type() == "filterlayer"
                  else node.filterConfig().properties())
@@ -463,9 +554,14 @@ def apply(doc, node, kind, params, do_refresh=True):
     title, ltype, kid = KINDS[kind]
     if ltype == "baked":
         from . import baked
-        remember(doc, node, kind, params)
-        baked.render(doc, node, kind, params, use_cache=True)
-        return True
+        if is_baked_node(node, kind):
+            remember(doc, node, kind, params)
+            baked.render(doc, node, kind, params, use_cache=True)
+            return True
+        if not native_filters():
+            raise baked.BakeError(u"This %s layer was made in Krita PS - it can only be "
+                                  u"edited there." % title)
+        ltype, kid = "filter", NATIVE_FILTERS[kind]
     props, layer = build_props(doc, kind, params)
     if ltype == "filter":
         f = k.filter(kid)
@@ -476,11 +572,19 @@ def apply(doc, node, kind, params, do_refresh=True):
         node.setFilter(f)
     else:
         node.setGenerator(kid, _info(props))
+    layer_changed = False
     if "blend" in layer and node.blendingMode() != layer["blend"]:
         node.setBlendingMode(layer["blend"])
+        layer_changed = True
     if "opacity" in layer and node.opacity() != layer["opacity"]:
         node.setOpacity(layer["opacity"])
+        layer_changed = True
     remember(doc, node, kind, params)
+    # Krita PS (patches/0003): setFilter() itself redraws the layer, live and
+    # asynchronously - no blocking re-render of the whole image (scripted
+    # opacity / blending mode changes still need one)
+    if core.engine_level() >= 2 and not layer_changed:
+        do_refresh = False
     if kind in ("curves", "brightness_contrast", "exposure"):
         try:
             ok = int(node.filter().configuration().properties().get("nTransfers", 0)) > 0
@@ -521,7 +625,8 @@ def create(kind, params=None):
     doc = k.activeDocument()
     if doc is None:
         return None
-    title, ltype, kid = KINDS[kind]
+    title = KINDS[kind][0]
+    ltype, kid = layer_kind(kind)
     params = params or defaults(kind)
     if ltype == "baked":
         from . import baked
@@ -589,3 +694,81 @@ def input_histogram(doc, layer, size=256):
                        ("red", raw[2::4])):
         out[name] = [data.count(bytes([i])) for i in range(256)]
     return out
+
+
+# ----------------------------------------- old computed layers -> native
+def convert_baked_layers(doc):
+    """Krita PS: turns the computed Color Lookup / Selective Color paint
+    layers of a document (made in the official Krita or by an older version
+    of the plugin) into real filter layers, which Krita renders live.
+    Name, opacity, blending mode, visibility, clipping and masks are kept.
+    A layer whose LUT file cannot be found stays as it is (and is still
+    refreshed the old way). Returns the number of converted layers."""
+    if not native_filters():
+        return 0
+    from . import baked
+    done = 0
+    for layer, kind, params in list(baked.iter_baked(doc)):
+        try:
+            if _convert_baked(doc, layer, kind, params):
+                done += 1
+        except Exception as e:
+            _log(u"could not convert %s to a live layer: %s" % (layer.name(), e))
+    if done:
+        _log(u"converted %d computed adjustment layer(s) to live filter layers" % done)
+    return done
+
+
+def _log(text):
+    try:
+        from .extension import log
+        log(text)
+    except Exception:
+        pass
+
+
+def _convert_baked(doc, layer, kind, params):
+    parent = layer.parentNode()
+    if parent is None:
+        return False
+    k = Krita.instance()
+    props, _extra = build_props(doc, kind, params)      # BakeError: LUT missing
+    f = k.filter(NATIVE_FILTERS[kind])
+    cfg = f.configuration()
+    for key, v in props.items():
+        cfg.setProperty(key, v)
+    f.setConfiguration(cfg)
+    sel = Selection()
+    sel.select(0, 0, doc.width(), doc.height(), 255)
+    node = doc.createFilterLayer(layer.name(), f, sel)
+    if node is None:
+        return False
+    active = doc.activeNode()
+    was_active = active is not None and (
+        core._same(active, layer) or (core.is_mask(active) and core._same(active.parentNode(), layer)))
+    parent.addChildNode(node, layer)                    # right above the old one
+    node.setBlendingMode(layer.blendingMode())
+    node.setOpacity(layer.opacity())
+    for get, put in (("inheritAlpha", "setInheritAlpha"), ("colorLabel", "setColorLabel")):
+        try:
+            getattr(node, put)(getattr(layer, get)())
+        except Exception:
+            pass
+    prev = None
+    for c in layer.childNodes():                        # bottom to top
+        if not core.is_mask(c):
+            continue
+        copy = c.duplicate()
+        if copy is None:
+            continue
+        node.addChildNode(copy, prev)
+        prev = copy
+    node.setVisible(layer.visible())
+    store = _load_store(doc)
+    store.pop(core.node_key(layer), None)
+    store[core.node_key(node)] = {"kind": kind, "params": params}
+    _save_store(doc, store)
+    layer.remove()
+    if was_active:
+        doc.setActiveNode(node)
+    return True

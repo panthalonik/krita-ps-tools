@@ -221,3 +221,38 @@ def list_luts(folders):
                     out.append((name, os.path.join(root, fn)))
     out.sort(key=lambda x: x[0].lower())
     return out
+
+
+# ------------------------------------------- for the Krita PS C++ filter
+def psl1_blob(lut):
+    """The table in the "PSL1" wire format of the C++ Color Lookup filter
+    (krita/plugins/filters/psfilters/ps_kernels.h, parseLut):
+    little endian "PSL1", int32 n3, int32 n1, float dmin[3], float dmax[3],
+    float d1[n1*3], float d3[n3^3*3]."""
+    has1d = lut.data1d is not None and lut.size1d
+    d1 = array("f", lut.data1d) if has1d else array("f")
+    d3 = array("f", lut.data) if lut.size else array("f")
+    if struct.pack("=H", 1) != struct.pack("<H", 1):     # big endian host
+        d1.byteswap()
+        d3.byteswap()
+    return (b"PSL1" + struct.pack("<ii", lut.size, lut.size1d if has1d else 0)
+            + struct.pack("<6f", *(list(lut.dmin) + list(lut.dmax)))
+            + d1.tobytes() + d3.tobytes())
+
+
+def filter_property(lut):
+    """(lut, lut_id) properties of the C++ Color Lookup filter: the PSL1
+    table compressed like Qt's qCompress() (big endian length + zlib
+    stream) as base64 text (survives saving the layer in a .kra), and a
+    hash of the table the filter caches the parsed table under."""
+    cached = getattr(lut, "_filter_prop", None)
+    if cached is not None:
+        return cached
+    import base64
+    import zlib
+    import hashlib
+    raw = psl1_blob(lut)
+    packed = struct.pack(">I", len(raw)) + zlib.compress(raw, 6)
+    lut._filter_prop = (base64.b64encode(packed).decode("ascii"),
+                        hashlib.sha1(raw).hexdigest())
+    return lut._filter_prop

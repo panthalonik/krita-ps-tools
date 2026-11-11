@@ -1,0 +1,15 @@
+diff --git a/libs/libkis/FilterLayer.cpp b/libs/libkis/FilterLayer.cpp
+index e5c4bbc..9aef3f2 100644
+--- a/libs/libkis/FilterLayer.cpp
++++ b/libs/libkis/FilterLayer.cpp
+@@ -40,6 +40,10 @@ void FilterLayer::setFilter(Filter &filter)
+     //getting the default configuration here avoids trouble with versioning.
+     if (layer) {
+         layer->setFilter(filter.filterConfig()->cloneWithResourcesSnapshot());
++        // ps_tools patch: show the new settings (asynchronously, like an
++        // edit in Krita's own filter dialog) - scripts need not re-render
++        // the whole image with Document.refreshProjection() any more
++        layer->setDirty();
+     }
+ }
+ 

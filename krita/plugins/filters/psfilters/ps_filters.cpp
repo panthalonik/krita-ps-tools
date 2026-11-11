@@ -31,7 +31,9 @@ K_PLUGIN_FACTORY_WITH_JSON(KritaPsFiltersFactory, "kritapsfilters.json", registe
 /// "ps_tools_engine"). This plugin is only built together with the engine
 /// patches (krita/patches), so the value also says which of them are in:
 ///   1 = C++ filters + native masks on pass-through groups
-static const int PS_TOOLS_ENGINE_LEVEL = 1;
+///   2 = + Blend If in the compositing engine (patches/0002) and filter
+///       layers that redraw by themselves after a scripted setFilter() (0003)
+static const int PS_TOOLS_ENGINE_LEVEL = 2;
 
 KritaPsFilters::KritaPsFilters(QObject *parent, const QVariantList &)
     : QObject(parent)
@@ -207,6 +209,20 @@ LutSP lutFromConfig(const KisFilterConfigurationSP config)
     static QList<QByteArray> order;
 
     if (!config) return LutSP();
+
+    // "lut_id" (set by the ps_tools plugin: a hash of the table) finds a
+    // parsed table without decoding the - possibly megabytes long - text
+    // again for every tile that is rendered
+    const QString id = config->getString("lut_id");
+    QByteArray idKey;
+    if (!id.isEmpty()) {
+        idKey = QByteArray("id:");
+        idKey.append(id.toLatin1());
+        QMutexLocker l(&mutex);
+        QHash<QByteArray, LutSP>::const_iterator it = cache.constFind(idKey);
+        if (it != cache.constEnd()) return it.value();
+    }
+
     const QVariant value = config->getProperty("lut");
     QByteArray packed = value.toByteArray();
     if (value.type() == QVariant::String) {
@@ -214,7 +230,8 @@ LutSP lutFromConfig(const KisFilterConfigurationSP config)
     }
     if (packed.isEmpty()) return LutSP();
 
-    const QByteArray key = QCryptographicHash::hash(packed, QCryptographicHash::Sha1);
+    const QByteArray key = idKey.isEmpty() ? QCryptographicHash::hash(packed, QCryptographicHash::Sha1)
+                                           : idKey;
     {
         QMutexLocker l(&mutex);
         QHash<QByteArray, LutSP>::const_iterator it = cache.constFind(key);
