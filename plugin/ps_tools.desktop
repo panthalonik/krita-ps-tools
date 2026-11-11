@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+X-KDE-Library=ps_tools
+X-Python-2-Compatible=false
+X-Krita-Manual=Manual.html
+Name=Blend If and Masks (Photoshop-style)
+Comment=Blend If in the layer right-click menu, Photoshop-style clipping masks (Alt+click between layers), pasting images into masks, an Add Mask button in the Layers docker.

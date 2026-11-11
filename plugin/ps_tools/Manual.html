@@ -1,0 +1,115 @@
+<h3>Blend If and Masks (Photoshop-style)</h3>
+
+<p><b>Blend If</b>: right-click a layer, then <i>Blend If…</i>. The "This Layer" and "Underlying Layer" sliders work like in Photoshop.
+<b>Alt + drag</b> half of a slider to split it for a smooth transition. The canvas updates live while you drag.</p>
+<ul>
+<li>The effect is a transparency mask named <code>Blend If (…)</code>. Its settings are stored in the name, so don't rename it or paint on it.</li>
+<li><b>Auto-refresh</b>: when you paint (or change, show/hide, move layers) below or on a layer with Blend If, the plugin recomputes it by itself right after you lift the pen (about 0.3 s) – never during a stroke or while a dialog is open. Only what the result really depends on triggers it: the layer's own pixels for <i>This Layer</i>, anything below it for <i>Underlying Layer</i>; painting the layer's own mask or layers above it does not. The image below is rendered on a hidden copy of the document, so the canvas does not flash. Layers above a Color Lookup / Selective Color layer don't show a stroke made below it until you lift the pen. Turn it off in <i>Tools → Scripts → Auto-refresh Blend If / Adjustments</i>. <i>Tools → Scripts → Refresh Blend If / Adjustments</i> refreshes everything at once.</li>
+<li>Supports 8- and 16-bit RGB and Grayscale images.</li>
+</ul>
+
+<p><b>Clipping mask</b>: <b>Alt + click</b> the line between two layers in the Layers docker, or press <b>Ctrl+Alt+G</b> (taken over from Krita's Quick Ungroup), or right-click and choose <i>Create / Release Clipping Mask</i>.</p>
+<ul>
+<li>The plugin builds a "<i>base</i> (clip)" group whose clipped layers use Inherit Alpha. The base's blending mode moves to the group.</li>
+<li>A layer dragged into or created inside the group is clipped automatically. A layer dragged out of it is released.</li>
+</ul>
+
+<p><b>Masks</b></p>
+<ul>
+<li>The button with a circle at the bottom of the Layers docker adds a mask (from the selection, if any). <b>Alt + click</b> adds a black mask.</li>
+<li><b>Alt + click a mask</b> shows it on the canvas in grayscale. Alt + click it again (or select another layer) to go back.</li>
+<li><b>Ctrl+Shift+V</b> while a mask is selected pastes the image into the mask. It comes in with Transform handles; press <b>Enter</b> to apply. Ctrl+Z undoes it. With a layer selected, Ctrl+Shift+V pastes into that layer. Plain Ctrl+V is Krita's regular paste (new layer).</li>
+<li>Levels (Ctrl+L), Curves (Ctrl+M) and other filters work on the selected mask.</li>
+</ul>
+
+
+<p><b>Adjustment layers</b>: the half black / half white circle button at the bottom of the Layers docker opens the same list as Photoshop.
+The layer is added above the active layer (with a mask from the selection, if any). The <b>Properties</b> panel (Settings → Dockers → Properties) shows its settings live:
+Levels (with histogram), Curves, Brightness/Contrast, Exposure, Hue/Saturation, Color Balance, Black &amp; White, Photo Filter (PS presets), Color Lookup, Selective Color, Posterize, Threshold, Grain, Clarity and Solid Color.
+Gradient, Pattern and Gradient Map open Krita's own editor.</p>
+<ul>
+<li>Panel buttons: clip to the layer below, Blend If…, Krita editor…, reset, visibility, delete.</li>
+<li><b>Blend If on an adjustment layer</b> limits the adjustment to a tonal range, like in PS. It is stored in the layer's own mask. You can still paint that mask by painting on the adjustment layer; the plugin combines your painting with Blend If when you select another layer.</li>
+<li><b>Masks on adjustment layers</b>: the mask button (or Krita's own "Add transparency mask") gives an adjustment layer an ordinary transparency mask. Paint on it to hide or reveal the adjustment, like in PS; the image updates while you paint. (Krita puts adjustment layers on the "Copy" blending mode, where a mask would cut a hole in the whole image, so the plugin switches such a layer to "Normal". Documents saved with older versions of the plugin are converted when opened.)</li>
+<li>Curves needs Krita 5.3 or newer. On older versions use "Krita editor…".</li>
+<li>Brightness/Contrast (with <i>Use Legacy</i>) and Exposure (Exposure, Offset, Gamma Correction – computed in linear light like Photoshop) are made as Photoshop's tone curve on a Krita curves filter layer, so they render natively and update live. Layers made with older versions of the plugin are converted when you select them. On Krita older than 5.3 they fall back to a Levels approximation.</li>
+</ul>
+
+<p><b>Color Lookup</b> (3D LUTs: <code>.cube</code>, <code>.3dl</code>, <code>.look</code>) and <b>Selective Color</b> (Reds … Blacks, Cyan/Magenta/Yellow/Black, Relative/Absolute – the Photoshop formula).
+Krita has no filters for these, so the plugin computes them: the layer is a paint layer whose pixels are made from the image below it, and it is recomputed automatically when something below changes (see Auto-refresh above).
+Opacity, blend modes, masks, clipping and Blend If work as on any layer. Don't paint on these layers – the next refresh replaces their pixels.</p>
+<ul>
+<li>LUT list: the LUTs bundled with the plugin, Photoshop's <code>Presets\3DLUTs</code> folder (found automatically) and your own folders (<i>LUT folders…</i> in the panel). <i>Load 3D LUT…</i> opens any file (its folder is added to the list).</li>
+<li>The LUT file path is saved in the .kra; if the file is missing (other computer), a LUT with the same name in your LUT folders is used.</li>
+<li>8-bit, 16-bit and 32-bit float RGB images. A small native module (<code>ps_native.dll</code>) does the math; a 6-megapixel image takes about 0.2 s.</li>
+</ul>
+
+
+<p><b>Smart Objects</b>: right-click a layer (or several selected layers) → <i>Convert to Smart Object</i>.
+The layers are saved into their own .kra file in a folder "<i>document name</i> Smart Objects" next to your document and replaced by a File Layer with a <i>Transform</i> mask.</p>
+<ul>
+<li><b>Ctrl+T</b> on the smart object transforms it without losing quality (Krita's Transform tool edits its Transform mask automatically) – scale it down and up again as often as you like.</li>
+<li><b>Double-click the thumbnail</b> (or right-click → <i>Edit Contents</i>) opens the contents in a new tab. Save it with <b>Ctrl+S</b> and the smart object in the main document updates by itself.</li>
+<li><b>Ctrl+J</b> on a smart object makes another instance of the same contents – editing the contents updates all of them, like in Photoshop.</li>
+<li>The document must be saved first (the plugin asks). When you move or send the .kra, take the "Smart Objects" folder with it.</li>
+<li>To turn a smart object back into pixels: right-click → Convert → to Paint Layer.</li>
+</ul>
+
+<p><b>Side strip</b> (like Photoshop's collapsed panels): a narrow strip between the canvas and the dockers with two buttons,
+<b>Brushes</b> (Krita's brush presets, F6) and <b>Brush Settings</b> (Krita's brush editor, F5). They open right next to the strip; click the button again, or click on the canvas, to close them.
+Right-click the strip to turn auto-collapse on or off. The strip hides in canvas-only mode (Tab). You can now close the Brush Presets docker to save space.</p>
+
+<p>Tip: to stop Krita asking about the color profile on every paste from other apps, set
+<i>Settings → Configure Krita → General → Miscellaneous → "Pasting data from other applications"</i> to <i>Assume sRGB</i>.</p>
+
+<p>Diagnostics: the plugin writes a small log to <code>ps_tools.log</code> in the Krita resource folder (Settings → Manage Resources → Open Resource Folder).</p>
+
+<h3>Brush Preset Picker (Photoshop-style)</h3>
+<p>In the tool options bar, the plugin puts a button with the current brush thumbnail and size in place of Krita's <i>Edit brush settings</i> and <i>Choose brush preset</i> buttons (it also hides the toolbar <i>Size</i> slider). The Brush Editor opens from the button under ⚙ in the panel, or with F5. Click it to open a panel like Photoshop's Brush Preset Picker:</p>
+<ul>
+<li><b>Size</b> and <b>Hardness</b> sliders (or type a value). Hardness is the <i>Fade</i> of a round or square (auto-brush) tip, the same as <i>Brush Editor → Brush Tip → Fade</i>. Like in Photoshop, it is disabled for image tips. Changing it marks the preset as changed, just like editing it in the Brush Editor; Krita's <i>Reload</i> button restores it.</li>
+<li><b>Search Brushes</b> filters by name; Enter picks the first match. The drop-down below filters by Krita's preset tags.</li>
+<li>The row of <b>recent brushes</b> remembers the size you used with each of them.</li>
+<li>Click a preset to use it, double-click or press Enter to use it and close the panel. The slider at the bottom changes the thumbnail size; drag the corner to resize the panel.</li>
+<li>⚙ menu: list or thumbnails-only view, show/hide tags and recent brushes, show Krita's <i>Size</i> slider or its brush preset / editor buttons again, clear recent brushes.</li>
+<li>Mouse wheel over the toolbar button changes the brush size.</li>
+<li><i>Tools → Scripts → Brush Preset Picker (at cursor)</i> opens the panel at the mouse cursor. Give it a shortcut in <i>Settings → Configure Krita → Keyboard Shortcuts</i>.</li>
+</ul>
+
+<h3>Shift + drag: straight brush strokes (Photoshop-style)</h3>
+<p>With the Freehand Brush tool, hold Shift and paint: the stroke is locked to a horizontal or vertical line, depending on the direction of the first few pixels. Pressure, tilt and other pen data are kept.</p>
+<p>Works with the mouse and with the tablet pen.</p>
+<ul>
+<li>One-time setup: Krita must paint while Shift is held. In <i>Settings → Configure Krita → Canvas Input Settings → Tool Invocation</i>, add (or change) a shortcut: <i>Mouse Button</i>, input <i>Shift + Left Button</i>, action <i>Activate</i>.</li>
+<li>Turn it on/off in <i>Tools → Scripts → Shift + drag: brush strokes along X / Y</i> or from the right-click menu of the Photoshop-style toolbox.</li>
+</ul>
+
+<h3>Tools (Photoshop-style) docker</h3>
+<p>A compact toolbox with tools grouped like in Photoshop: Move/Transform | Marquee, Lasso, Magic Wand | Crop, Assistants/References, Eyedropper/Measure | Smart Patch, Brush, Gradient/Fill | Pen, Text, Shape Selection, Shapes | Hand, Zoom. Tools from other plugins go to "Other".</p>
+<ul>
+<li>Show it with <i>Settings → Dockers → Tools (Photoshop-style)</i> and drag it to the left edge.</li>
+<li>Click a group to use the tool it shows. Press and hold, or right-click, to choose another tool of the group (shortcuts are listed). The group remembers the last tool you used.</li>
+<li>Right-click on the empty part of the docker: one or two columns, button size, show/hide Krita's own Toolbox, Shift axis lock on/off.</li>
+</ul>
+
+<h3>Opacity / Flow / Smoothing in the tool options bar</h3>
+<p>In place of Krita's Opacity slider the plugin shows Photoshop-like fields: <b>Opacity</b>, <b>Flow</b> and <b>Smoothing</b>. Type a value, click ▾ for a slider, or drag the label left/right.</p>
+<ul>
+<li><b>Smoothing</b> sets the Freehand Brush tool's <i>Brush Smoothing</i> (Tool Options): 0% = None, more = Weighted with a larger distance (100% = 300 px). In Krita 5.3+, which has two distance sliders (at max / min speed), the value sets the larger one; the other follows if the two are chained with the lock button, otherwise it gets the same value. The ⚙ next to it switches to Stabilizer and opens Tool Options for the remaining settings. It is enabled once the Freehand Brush tool has been selected.</li>
+<li>Right-click a field: show Krita's Opacity slider again.</li>
+</ul>
+
+<h3>Photoshop-style Layers docker</h3>
+<p>Krita's Layers docker shows clipping stacks and layer masks the way Photoshop does:</p>
+<ul>
+<li>The plugin's clipping groups ("… (clip)") have no row of their own: the base layer is underlined, the clipped layers above it are indented with a clipping arrow.</li>
+<li>A layer's transparency mask is shown as a second thumbnail next to the layer thumbnail instead of a separate row. Click it to edit the mask, click the layer thumbnail to edit the layer; the edited one has a frame. Shift+click the mask thumbnail = disable/enable the mask, Alt+click = show the mask alone.</li>
+<li>Other masks (filter masks, extra transparency masks, Blend If) keep their own rows.</li>
+<li>Only the look changes: eye, lock and alpha icons, drag &amp; drop, renaming and the right-click menu are Krita's own. Turn it off in <i>Tools → Scripts → Photoshop-style Layers docker look</i>.</li>
+</ul>
+
+<h3>Clipping masks and Undo</h3>
+<ul>
+<li>Create / Release Clipping Mask is one undo step: one Ctrl+Z undoes it completely (the plugin uses Krita's own Quick Group, Quick Ungroup and Move Layer Down commands on the selected layers).</li>
+<li>Grouping a base layer together with its clipped layers (Ctrl+G) keeps the clipping inside the new group, like in Photoshop. Releasing a layer inside such a group unclips it in place.</li>
+</ul>

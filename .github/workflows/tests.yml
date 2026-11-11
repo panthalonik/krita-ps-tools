@@ -1,0 +1,30 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1 libxkbcommon0 >/dev/null
+          pip install -q numpy PyQt5
+      - name: Python plugin tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          cd plugin
+          for t in verification/test_*.py; do echo "== $t"; python "$t"; done
+      - name: C++ kernel tests
+        run: |
+          python krita/plugins/filters/psfilters/tests/gen_reference.py plugin/ps_tools /tmp/vectors
+          g++ -O2 -std=c++17 -Wall -Wextra -o /tmp/test_kernels krita/plugins/filters/psfilters/tests/test_kernels.cpp
+          /tmp/test_kernels /tmp/vectors

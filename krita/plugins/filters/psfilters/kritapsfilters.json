@@ -1,0 +1,9 @@
+{
+    "Id": "Photoshop-style Filters (ps_tools)",
+    "Type": "Service",
+    "X-KDE-Library": "kritapsfilters",
+    "X-KDE-ServiceTypes": [
+        "Krita/Filter"
+    ],
+    "X-Krita-Version": "28"
+}
