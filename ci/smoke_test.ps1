@@ -31,4 +31,5 @@ python (Join-Path $Repo 'ci\psd_inspect.py') $psd --check-smoke
 $psdStatus = $LASTEXITCODE
 $json = Get-Content (Join-Path $out 'smoke.json') -Raw | ConvertFrom-Json
 if (-not $json.ok_render) { Write-Host 'FAIL: rendering checks (Blend If / clipping) did not match'; exit 1 }
+if (-not $json.ok_import) { Write-Host 'FAIL: the PSD did not import back with adjustment layers / clipping / Blend If'; exit 1 }
 exit $psdStatus

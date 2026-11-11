@@ -123,6 +123,29 @@ def main(args):
         res["export_psd"] = bool(doc.exportImage(os.path.join(out_dir, "smoke.psd"), InfoObject()))
         res["save_kra"] = bool(doc.saveAs(os.path.join(out_dir, "smoke.kra")))
         doc.close()
+
+        # import the PSD again: adjustment layers, clipping and Blend If back
+        back = k.openDocument(os.path.join(out_dir, "smoke.psd"))
+        if back is None:
+            res["errors"].append("could not open smoke.psd again")
+        else:
+            back.waitForDone()
+            layers = {}
+            for n in back.rootNode().childNodes():
+                info = {"type": n.type(), "clip": bool(n.inheritAlpha()),
+                        "masks": [c.name() for c in n.childNodes()]}
+                if n.type() == "filterlayer":
+                    info["filter"] = n.filter().name()
+                layers[n.name()] = info
+            res["import"] = layers
+            want = {"Levels": "levels", "Curves": "perchannel", "Hue/Saturation": "hsvadjustment",
+                    "Color Balance": "colorbalance", "Selective Color": "psselectivecolor",
+                    "Invert": "invert", "Posterize": "posterize", "Threshold": "threshold"}
+            res["ok_import"] = (all(layers.get(n, {}).get("filter") == f for n, f in want.items())
+                                and layers.get("Clipped blue", {}).get("clip") is True
+                                and any(m.startswith("Blend If (")
+                                        for m in layers.get("BlendIf red", {}).get("masks", [])))
+            back.close()
     except Exception:
         res["errors"].append(traceback.format_exc())
     with open(os.path.join(out_dir, "smoke.json"), "w") as f:

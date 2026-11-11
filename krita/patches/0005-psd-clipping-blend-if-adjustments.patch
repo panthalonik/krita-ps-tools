@@ -1,3 +1,39 @@
+diff --git a/libs/psd/psd_additional_layer_info_block.cpp b/libs/psd/psd_additional_layer_info_block.cpp
+index e6f3c9e..fad6a68 100644
+--- a/libs/psd/psd_additional_layer_info_block.cpp
++++ b/libs/psd/psd_additional_layer_info_block.cpp
+@@ -126,6 +126,15 @@ void PsdAdditionalLayerInfoBlock::readImpl(QIODevice &io)
+         }
+         keys << key;
+ 
++        // ps_tools patch: keep Photoshop adjustment layer data for the loader
++        if (psAdjustmentKey.isEmpty() &&
++            (key == "levl" || key == "curv" || key == "expA" || key == "hue2" || key == "hue " ||
++             key == "blnc" || key == "selc" || key == "nvrt" || key == "post" || key == "thrs")) {
++            psAdjustmentKey = key;
++            psAdjustmentData = io.read(qint64(blockSize));
++            continue;
++        }
++
+         // TODO: Loading of 32 bit files is not supported yet
+         if (key == "Lr16" /* || key == "Lr32"*/) {
+             if (m_layerInfoBlockHandler) {
+diff --git a/libs/psd/psd_additional_layer_info_block.h b/libs/psd/psd_additional_layer_info_block.h
+index 8fae4b1..1f014bb 100644
+--- a/libs/psd/psd_additional_layer_info_block.h
++++ b/libs/psd/psd_additional_layer_info_block.h
+@@ -1379,6 +1379,11 @@ public:
+     QString error;
+     QStringList keys; // List of all the keys that we've seen
+ 
++    // ps_tools patch: the first Photoshop adjustment block of the layer
++    // (key and raw big endian data, see psd_ps_adjustments.h)
++    QString psAdjustmentKey;
++    QByteArray psAdjustmentData;
++
+     QString unicodeLayerName;
+     QDomDocument layerStyleXml;
+ 
 diff --git a/libs/psd/psd_layer_record.cpp b/libs/psd/psd_layer_record.cpp
 index b73f50c..885e001 100644
 --- a/libs/psd/psd_layer_record.cpp
@@ -210,10 +246,10 @@ index 4c776ce..cc117d3 100644
                  layerRecord->visible = nodeVisible;
 diff --git a/libs/psd/psd_ps_adjustments.h b/libs/psd/psd_ps_adjustments.h
 new file mode 100644
-index 0000000..7b41d7d
+index 0000000..0114689
 --- /dev/null
 +++ b/libs/psd/psd_ps_adjustments.h
-@@ -0,0 +1,296 @@
+@@ -0,0 +1,498 @@
 +/*
 + *  Photoshop adjustment layers in PSD files (ps_tools patch).
 + *
@@ -236,6 +272,7 @@ index 0000000..7b41d7d
 +#ifndef PSD_PS_ADJUSTMENTS_H
 +#define PSD_PS_ADJUSTMENTS_H
 +
++#include <algorithm>
 +#include <cmath>
 +
 +#include <QByteArray>
@@ -247,10 +284,15 @@ index 0000000..7b41d7d
 +#include <QStringList>
 +#include <QVector>
 +
++#include <QJsonValue>
++
++#include <KisGlobalResourcesInterface.h>
 +#include <kis_adjustment_layer.h>
 +#include <kis_annotation.h>
 +#include <kis_image.h>
++#include <filter/kis_filter.h>
 +#include <filter/kis_filter_configuration.h>
++#include <filter/kis_filter_registry.h>
 +
 +namespace psAdjust {
 +
@@ -507,18 +549,215 @@ index 0000000..7b41d7d
 +    return false;
 +}
 +
++// ===================================================================== import
++// Photoshop adjustment layer -> Krita filter layer with the same settings.
++
++/// Keys of the Photoshop adjustment blocks read back on import.
++inline bool isImportedKey(const QString &key)
++{
++    return key == "levl" || key == "curv" || key == "expA" || key == "hue2" || key == "hue " ||
++           key == "blnc" || key == "selc" || key == "nvrt" || key == "post" || key == "thrs";
++}
++
++inline KisFilterConfigurationSP config(const QString &filterId)
++{
++    KisFilterSP f = KisFilterRegistry::instance()->value(filterId);
++    if (!f) return KisFilterConfigurationSP();
++    return f->factoryConfiguration(KisGlobalResourcesInterface::instance());
++}
++
++inline QString levelsText(double ib, double iw, double g, double ob, double ow)
++{
++    return QString("%1;%2;%3;%4;%5").arg(ib).arg(iw).arg(g).arg(ob).arg(ow);
++}
++
++inline QString curveText(const QVector<QPointF> &pts)
++{
++    QString out;
++    for (const QPointF &p : pts) out += QString("%1,%2;").arg(p.x()).arg(p.y());
++    return out;
++}
++
++/// Photoshop's Exposure (linear light) as Krita curve points.
++inline QVector<QPointF> exposureCurve(double e, double offset, double gamma)
++{
++    auto dec = [](double v) { return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
++    auto enc = [](double v) {
++        if (v <= 0.0) return 0.0;
++        return v <= 0.0031308 ? v * 12.92 : 1.055 * std::pow(v, 1.0 / 2.4) - 0.055;
++    };
++    const double a = std::pow(2.0, e), g = std::max(0.01, gamma);
++    QVector<QPointF> pts;
++    for (int i = 0; i <= 32; i++) {
++        const double x = i / 32.0;
++        double v = std::max(0.0, dec(x) * a + offset);
++        v = std::pow(v, 1.0 / g);
++        pts << QPointF(x, std::min(1.0, std::max(0.0, enc(v))));
++    }
++    return pts;
++}
++
++/// Records which Photoshop adjustment a layer is, the way the ps_tools
++/// plugin does (document annotation "ps_tools_adjustments").
++inline void rememberForPlugin(KisImageSP image, const KisNode *node, const QString &kind, const QJsonObject &params)
++{
++    QJsonObject store;
++    if (KisAnnotationSP a = image->annotation("ps_tools_adjustments")) {
++        store = QJsonDocument::fromJson(a->annotation()).object();
++    }
++    QJsonObject rec;
++    rec["kind"] = kind;
++    rec["params"] = params;
++    store[node->uuid().toString()] = rec;
++    image->addAnnotation(KisAnnotationSP(new KisAnnotation(
++        "ps_tools_adjustments", "PS-style adjustment layer data (ps_tools plugin)",
++        QJsonDocument(store).toJson(QJsonDocument::Compact))));
++}
++
++/// A Krita adjustment layer for the Photoshop block, or null when it cannot
++/// be read (the layer is then loaded as before).
++inline KisAdjustmentLayerSP importLayer(KisImageSP image, const QString &name,
++                                        const QString &key, const QByteArray &data)
++{
++    if (!image || !isImportedKey(key)) return KisAdjustmentLayerSP();
++    QDataStream s(data);
++    s.setByteOrder(QDataStream::BigEndian);
++    KisFilterConfigurationSP cfg;
++    QString pluginKind;
++    QJsonObject pluginParams;
++
++    if (key == "levl") {
++        quint16 version = 0;
++        s >> version;
++        if (version != 2) return KisAdjustmentLayerSP();
++        cfg = config("levels");
++        if (!cfg) return KisAdjustmentLayerSP();
++        cfg->setProperty("mode", "channels");
++        cfg->setProperty("number_of_channels", 8);
++        for (int i = 0; i < 8; i++) {
++            QString text = levelsText(0, 1, 1, 0, 1);
++            if (i < 4) {
++                qint16 inLo, inHi, outLo, outHi, gamma;
++                s >> inLo >> inHi >> outLo >> outHi >> gamma;
++                if (s.status() == QDataStream::Ok) {
++                    text = levelsText(inLo / 255.0, inHi / 255.0, std::max(0.01, gamma / 100.0),
++                                      outLo / 255.0, outHi / 255.0);
++                }
++            }
++            cfg->setProperty(QString("channel_%1").arg(i), text);
++        }
++    } else if (key == "curv") {
++        quint8 isMap = 0;
++        quint16 version = 0;
++        quint32 mask = 0;
++        s >> isMap >> version >> mask;
++        if (isMap || version != 1) return KisAdjustmentLayerSP();     // pencil curves: not supported
++        cfg = config("perchannel");
++        if (!cfg) return KisAdjustmentLayerSP();
++        cfg->setProperty("nTransfers", 8);
++        for (int i = 0; i < 32; i++) {
++            if (!(mask & (1u << i))) continue;
++            quint16 count = 0;
++            s >> count;
++            QVector<QPointF> pts;
++            for (int k = 0; k < count && s.status() == QDataStream::Ok; k++) {
++                qint16 out, in;
++                s >> out >> in;
++                pts << QPointF(in / 255.0, out / 255.0);
++            }
++            if (i < 4 && pts.size() >= 2) cfg->setProperty(QString("curve%1").arg(i), curveText(pts));
++        }
++        pluginKind = "curves";
++    } else if (key == "expA") {
++        quint16 version = 0;
++        float e = 0, offset = 0, gamma = 1;
++        s.setFloatingPointPrecision(QDataStream::SinglePrecision);
++        s >> version >> e >> offset >> gamma;
++        if (version != 1 || s.status() != QDataStream::Ok) return KisAdjustmentLayerSP();
++        cfg = config("perchannel");
++        if (!cfg) return KisAdjustmentLayerSP();
++        cfg->setProperty("nTransfers", 8);
++        cfg->setProperty("curve0", curveText(exposureCurve(e, offset, gamma)));
++        pluginKind = "exposure";
++        pluginParams["exposure"] = double(e);
++        pluginParams["offset"] = double(offset);
++        pluginParams["gamma"] = double(gamma);
++    } else if (key == "hue2" || key == "hue ") {
++        quint16 version = 0;
++        quint8 colorize = 0, pad = 0;
++        qint16 ch, cs, cl, mh, ms, ml;
++        s >> version >> colorize >> pad >> ch >> cs >> cl >> mh >> ms >> ml;
++        if (s.status() != QDataStream::Ok) return KisAdjustmentLayerSP();
++        cfg = config("hsvadjustment");
++        if (!cfg) return KisAdjustmentLayerSP();
++        cfg->setProperty("type", 1);
++        cfg->setProperty("compatibilityMode", false);
++        cfg->setProperty("colorize", bool(colorize));
++        cfg->setProperty("h", int(colorize ? ch : mh));
++        cfg->setProperty("s", int(colorize ? cs : ms));
++        cfg->setProperty("v", int(colorize ? cl : ml));
++    } else if (key == "blnc") {
++        qint16 v[9];
++        quint8 preserve = 1;
++        for (int i = 0; i < 9; i++) s >> v[i];
++        s >> preserve;
++        if (s.status() != QDataStream::Ok) return KisAdjustmentLayerSP();
++        cfg = config("colorbalance");
++        if (!cfg) return KisAdjustmentLayerSP();
++        const char *tones[3] = {"shadows", "midtones", "highlights"};
++        for (int t = 0; t < 3; t++) {
++            cfg->setProperty(QString("cyan_red_") + tones[t], int(v[t * 3 + 0]));
++            cfg->setProperty(QString("magenta_green_") + tones[t], int(v[t * 3 + 1]));
++            cfg->setProperty(QString("yellow_blue_") + tones[t], int(v[t * 3 + 2]));
++        }
++        cfg->setProperty("preserve_luminosity", bool(preserve));
++    } else if (key == "selc") {
++        quint16 version = 0, method = 0;
++        s >> version >> method;
++        qint16 skip;
++        for (int i = 0; i < 4; i++) s >> skip;
++        QStringList values;
++        for (int i = 0; i < 36; i++) {
++            qint16 v = 0;
++            s >> v;
++            values << QString::number(int(v));
++        }
++        if (s.status() != QDataStream::Ok) return KisAdjustmentLayerSP();
++        cfg = config("psselectivecolor");
++        if (!cfg) return KisAdjustmentLayerSP();
++        cfg->setProperty("values", values.join(","));
++        cfg->setProperty("relative", method == 0);
++    } else if (key == "nvrt") {
++        cfg = config("invert");
++    } else if (key == "post" || key == "thrs") {
++        quint16 v = 0;
++        s >> v;
++        cfg = config(key == "post" ? "posterize" : "threshold");
++        if (cfg) cfg->setProperty(key == "post" ? "steps" : "threshold", int(v));
++    }
++    if (!cfg) return KisAdjustmentLayerSP();
++
++    KisAdjustmentLayerSP layer = new KisAdjustmentLayer(image, name, cfg->cloneWithResourcesSnapshot(),
++                                                        KisSelectionSP());
++    if (pluginKind == "exposure") {
++        rememberForPlugin(image, layer.data(), pluginKind, pluginParams);
++    }
++    return layer;
++}
++
 +} // namespace psAdjust
 +
 +#endif
 diff --git a/plugins/impex/psd/psd_loader.cpp b/plugins/impex/psd/psd_loader.cpp
-index 87e365c..ceb60b0 100644
+index 87e365c..095b7cd 100644
 --- a/plugins/impex/psd/psd_loader.cpp
 +++ b/plugins/impex/psd/psd_loader.cpp
-@@ -58,6 +58,11 @@
+@@ -58,6 +58,12 @@
  #include "KisImageBarrierLock.h"
  #include "KisImportUserFeedbackInterface.h"
  
 +#include <kis_ps_blend_if.h>
++#include "psd_ps_adjustments.h"
 +#include <kis_pixel_selection.h>
 +#include <kis_selection.h>
 +#include <KoCompositeOpRegistry.h>
@@ -526,7 +765,21 @@ index 87e365c..ceb60b0 100644
  
  PSDLoader::PSDLoader(KisDocument *doc, KisImportUserFeedbackInterface *feedbackInterface)
      : m_image(0)
-@@ -607,6 +612,55 @@ KisImportExportErrorCode PSDLoader::decode(QIODevice &io)
+@@ -538,6 +544,13 @@ KisImportExportErrorCode PSDLoader::decode(QIODevice &io)
+                 }
+                 textLayer->addShape(shape);
+                 layer = textLayer;
++            } else if (KisAdjustmentLayerSP adjustment = psAdjust::importLayer(
++                           m_image, layerRecord->layerName, layerRecord->infoBlocks.psAdjustmentKey,
++                           layerRecord->infoBlocks.psAdjustmentData)) {
++                // ps_tools patch: a Photoshop adjustment layer becomes a Krita
++                // filter layer with the same settings (psd_ps_adjustments.h)
++                adjustment->setOpacity(layerRecord->opacity);
++                layer = adjustment;
+             } else {
+                 layer = new KisPaintLayer(m_image, layerRecord->layerName, layerRecord->opacity);
+                 if (!layerRecord->readPixelData(io, layer->paintDevice())) {
+@@ -607,6 +620,55 @@ KisImportExportErrorCode PSDLoader::decode(QIODevice &io)
              }
          }
  
