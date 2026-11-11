@@ -6,6 +6,7 @@ on:
     paths:
       - 'krita/**'
       - 'ci/**'
+      - 'plugin/**'
       - '.github/workflows/build-windows.yml'
   workflow_dispatch:
     inputs:

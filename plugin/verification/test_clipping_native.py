@@ -44,6 +44,7 @@ def _duplicate(self):
 
 
 Node.opacity, Node.setOpacity, Node.duplicate = _opacity, _set_opacity, _duplicate
+Node.bounds = lambda self: types.SimpleNamespace(isEmpty=lambda: not any(self.pixels))
 
 from ps_tools import clip, core                 # noqa: E402
 
@@ -224,6 +225,46 @@ class PhotoshopHabits(Base):
         self.sync()
         self.assertEqual(flags(g), [False, True, True])
         self.assertIs(clip.native_base(self.c2), self.base)
+
+    def test_deleting_layers_never_switches_clipping(self):
+        """Regression: deleting layers made the sync see "moved" layers and
+        toggle clipping - an extra undo step that swallowed Remove Layer."""
+        self.sync()
+        before = flags(self.doc.root)
+        self.c1.remove()                                     # a clipped layer
+        self.sync()
+        self.assertEqual(flags(self.doc.root), [before[0], before[1], before[3], before[4]])
+        self.base.remove()                                   # the base
+        self.sync()
+        self.assertTrue(self.c2.inheritAlpha())              # untouched
+        self.assertFalse(self.top.inheritAlpha())
+
+    def test_undo_brings_a_base_back_unchanged(self):
+        self.sync()
+        self.base.remove()
+        self.sync()
+        self.base.pixels = b"\x01" * len(self.base.pixels)  # has content
+        self.doc.root.addChildNode(self.base, self.bg)       # what Undo does
+        self.doc.setActiveNode(self.base)
+        self.sync()
+        self.assertFalse(self.base.inheritAlpha())
+
+    def test_waits_while_krita_is_busy(self):
+        self.sync()
+        n = make(self.doc, "New", above=self.c1)
+        self.doc.setActiveNode(n)
+        saved = core.idle
+        core.idle = lambda doc: False
+        try:
+            clip._nat_dirty[0] = True
+            clip.sync(self.doc)
+            self.assertFalse(n.inheritAlpha())
+            self.assertTrue(clip._nat_dirty[0])              # looks again later
+        finally:
+            core.idle = saved
+        clip._busy_until[0] = 0
+        clip.sync(self.doc)
+        self.assertTrue(n.inheritAlpha())
 
     def test_quiet_without_changes(self):
         self.sync()

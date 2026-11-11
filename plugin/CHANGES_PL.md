@@ -77,6 +77,14 @@ Ograniczenia: warstwa przycięta do grupy Pass Through (i grupa Pass Through jak
 
 Testy: python verification/test_clipping_native.py (18 testów, atrapa API Krity).
 
+## Wersja en11 — poprawka: Cofnij po usuwaniu warstw
+
+- Błąd: po usunięciu kilku warstw po kolei jedno Ctrl+Z przywracało wszystkie naraz, a w historii Cofnij pojawiało się „Property changes” zamiast „Remove nodes”. Przyczyna: Krita usuwa warstwę z opóźnieniem, w tle, a wtyczka (pilnowanie clippingu) zaglądała w tym czasie do stosu warstw, widziała stan „w połowie” i przełączała clipping. Ten dodatkowy krok cofania wchodził w drogę poleceniu usuwania.
+- Teraz wtyczka czeka, aż Krita skończy polecenie. Reguły „przeciągnięta do stosu / poza stos” działają tylko przy czystym przesuwaniu warstw (usunięcie ani dodanie warstwy nigdy nie przełącza clippingu), a reguła „nowa warstwa w stosie” tylko dla jednej, świeżo utworzonej warstwy — nie dla warstw przywróconych przez Cofnij.
+- Szybciej: blokada osi pędzla (Shift + przeciągnięcie) w C++, pasek opcji nie przeszukuje już wszystkich widżetów Krity, panel Properties nie kopiuje tablicy LUT kilka razy na sekundę; Instant Preview domyślnie włączony (łatka `0006`).
+
+Testy: python verification/test_clipping_native.py (21 testów).
+
 ## Dokumenty ze starszej wersji
 
 Przy pierwszym otwarciu dokumentu wtyczka zamienia „Layer Mask” (lub ukryty magazyn) na maskę przezroczystości z tą samą zawartością, przywraca pełną wbudowaną maskę warstwy i przelicza Blend If. Po zapisaniu taki dokument nie będzie poprawnie obsługiwany przez starszą wersję wtyczki — przed pierwszym użyciem zrób kopię ważnych plików .kra.

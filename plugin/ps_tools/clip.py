@@ -886,24 +886,46 @@ def native_sync(doc):
     _nat_ticks[0] += 1
     if not _nat_dirty[0] and _nat_ticks[0] % NATIVE_FULL_EVERY:
         return False
+    # Krita applies layer commands (Remove Layer, Move, Group...) a moment
+    # later, in the background. Looking in the middle of one would see a
+    # half-done layer stack and could switch clipping - an extra undo step
+    # that gets in the way of the user's own command. Wait until it is done.
+    if not core.idle(doc):
+        _nat_dirty[0] = True
+        return False
     _nat_dirty[0] = False
     act = doc.activeNode()
     now = {}
-    clip_on, clip_off = [], []
+    for parent, kids in _levels(doc.rootNode()):
+        pkey = _key(parent)
+        for i, n in enumerate(kids):
+            below = _key(kids[i - 1]) if i > 0 else None
+            above = _key(kids[i + 1]) if i + 1 < len(kids) else None
+            now[_key(n)] = (pkey, below, above)
     first_look = not _nat_neighbours
+    # the move rules only for a pure move: when layers were added or removed
+    # their neighbours change too, and that must not clip / release anything
+    pure_move = set(now) == set(_nat_neighbours)
+    added = set(now) - set(_nat_neighbours)
+    removed = set(_nat_neighbours) - set(now)
+    # the new-layer rules only for one layer just made by the user (active,
+    # and empty when it is a paint layer) - not for layers brought back by
+    # Undo, which must come back exactly as they were
+    one_new = len(added) == 1 and not removed
+    clip_on, clip_off = [], []
     for parent, kids in _levels(doc.rootNode()):
         pkey = _key(parent)
         for i, n in enumerate(kids):
             k = _key(n)
-            below = _key(kids[i - 1]) if i > 0 else None
-            above = _key(kids[i + 1]) if i + 1 < len(kids) else None
-            now[k] = (pkey, below, above)
+            below, above = now[k][1], now[k][2]
             if first_look:
                 continue
             old = _nat_neighbours.get(k)
             up = kids[i + 1] if i + 1 < len(kids) else None
             dn = kids[i - 1] if i > 0 else None
             if old is None:
+                if not (one_new and _same(act, n) and _fresh(n)):
+                    continue
                 # PS: a new layer inside a clipping stack is clipped too, and
                 # so is one made while a clipped layer was selected
                 if not n.inheritAlpha() and dn is not None and (
@@ -919,7 +941,7 @@ def native_sync(doc):
                         _nat_dirty[0] = True
                 continue
             moved = old[0] != pkey or (old[1] != below and old[2] != above)
-            if not moved:
+            if not moved or not pure_move:
                 continue
             if (up is not None and up.inheritAlpha() and dn is not None
                     and not n.inheritAlpha() and old[2] != _key(up)):
@@ -942,6 +964,17 @@ def native_sync(doc):
     if changed:
         _nat_dirty[0] = True
     return changed
+
+
+def _fresh(n):
+    """A layer as Krita makes it new: an empty paint layer, or any other kind
+    (adjustment, fill, group...)."""
+    if n.type() != "paintlayer":
+        return True
+    try:
+        return n.bounds().isEmpty()
+    except Exception:
+        return False
 
 
 def _moved_with_base(n, dn, old):
