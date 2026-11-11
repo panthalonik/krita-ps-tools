@@ -415,8 +415,12 @@ class OptionsStrip(QWidget):
                 self.flow.set_value(round(view.paintingFlow() * 100))
         except Exception:
             pass
+        # smoothing_controls() walks every widget of Krita: only look again
+        # when a found control was deleted, or now and then while none exist
+        # (the brush tool's options appear once the tool has been used)
         self._controls_age += 1
-        if self._controls_age % 10 == 1 or not self._controls:
+        dead = any(sip.isdeleted(c) for c, _spins in self._controls) if self._controls else False
+        if dead or self._controls_age % 60 == 1 or (not self._controls and self._controls_age % 10 == 1):
             self._controls = smoothing_controls()
         if not self.smooth.busy():
             p = read_smoothing(self._controls)

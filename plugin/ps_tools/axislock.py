@@ -301,6 +301,19 @@ class Controller(object):
 
     def tick(self):
         """From the extension's poll (~300 ms)."""
+        from . import core
+        if core.engine_level() >= 4:
+            # Krita PS does the axis lock in C++ (ps_axis_lock.cpp): just tell
+            # it whether the option is on, no Python event filter at all
+            on = enabled()
+            app = QApplication.instance()
+            if app.property("ps_tools_axislock") != on:
+                app.setProperty("ps_tools_axislock", on)
+            if self.installed and self.filter is not None and self.filter.stroke is None:
+                app.removeEventFilter(self.filter)
+                self.filter.release_canvases()
+                self.installed = False
+            return
         want = enabled() and self._brush_active()
         if self.filter is None:
             self.filter = AxisLock()

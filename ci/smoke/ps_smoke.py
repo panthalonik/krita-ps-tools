@@ -148,6 +148,56 @@ def main(args):
             back.close()
     except Exception:
         res["errors"].append(traceback.format_exc())
+    try:
+        res["perf"] = benchmark(Krita.instance())
+    except Exception:
+        res["errors"].append("benchmark: " + traceback.format_exc())
     with open(os.path.join(out_dir, "smoke.json"), "w") as f:
         json.dump(res, f, indent=1)
     log(json.dumps(res))
+
+
+def benchmark(k, w=3000, h=2000, stacks=6):
+    """Seconds for a full re-render of a photobash-like document: the same
+    layers plain, then as clipping stacks with Blend If (the cost of the
+    engine patches compared with Krita's own compositing)."""
+    import time
+
+    def build(ps):
+        d = k.createDocument(w, h, "bench", "RGBA", "U8", "", 72.0)
+        root = d.rootNode()
+        data = bytes(range(256)) * (w * h * 4 // 256)
+        above = None
+        for i in range(stacks):
+            base = d.createNode("base %d" % i, "paintlayer")
+            root.addChildNode(base, above)
+            base.setPixelData(data, 0, 0, w, h)
+            top = d.createNode("top %d" % i, "paintlayer")
+            root.addChildNode(top, base)
+            top.setPixelData(data[::-1], 0, 0, w, h)
+            if ps:
+                top.setInheritAlpha(True)
+                m = d.createTransparencyMask("Blend If (Gray | 20/60 255/255 | 0/0 200/240)")
+                top.addChildNode(m, None)
+            curves = filter_layer(k, d, "curves %d" % i, "perchannel",
+                                  {"curve0": "0,0;0.5,0.6;1,1;"})
+            root.addChildNode(curves, top)
+            if ps:
+                curves.setInheritAlpha(True)
+            above = curves
+        d.waitForDone()
+        return d
+
+    out = {}
+    for label, ps in (("plain", False), ("clip_blendif", True)):
+        d = build(ps)
+        times = []
+        for _ in range(3):
+            t0 = time.perf_counter()
+            d.refreshProjection()
+            d.waitForDone()
+            times.append(round(time.perf_counter() - t0, 3))
+        out[label] = times
+        d.close()
+    out["size"] = "%dx%d, %d stacks (base + clipped layer + clipped curves)" % (w, h, stacks)
+    return out

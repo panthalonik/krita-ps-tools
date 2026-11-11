@@ -24,6 +24,7 @@
 #include <filter/kis_filter_registry.h>
 
 #include "ps_kernels.h"
+#include "ps_axis_lock.h"
 
 K_PLUGIN_FACTORY_WITH_JSON(KritaPsFiltersFactory, "kritapsfilters.json", registerPlugin<KritaPsFilters>();)
 
@@ -36,13 +37,21 @@ K_PLUGIN_FACTORY_WITH_JSON(KritaPsFiltersFactory, "kritapsfilters.json", registe
 ///   3 = + Photoshop clipping masks in the engine: "inherit alpha" clips to
 ///       the base below, the stack is composited on its own (0004), and PSD
 ///       files keep clipping and Blend If (0005)
-static const int PS_TOOLS_ENGINE_LEVEL = 3;
+///   4 = + Shift + drag axis lock of the brush in C++ (ps_axis_lock.cpp)
+static const int PS_TOOLS_ENGINE_LEVEL = 4;
 
 KritaPsFilters::KritaPsFilters(QObject *parent, const QVariantList &)
     : QObject(parent)
 {
     if (QCoreApplication::instance()) {
         QCoreApplication::instance()->setProperty("ps_tools_engine", PS_TOOLS_ENGINE_LEVEL);
+        // Shift + drag axis lock: one cheap C++ filter instead of a Python one
+        // that would see every event of the application (see ps_axis_lock.h)
+        static PsAxisLock *axisLock = nullptr;
+        if (!axisLock) {
+            axisLock = new PsAxisLock(QCoreApplication::instance());
+            QCoreApplication::instance()->installEventFilter(axisLock);
+        }
     }
     KisFilterRegistry::instance()->add(KisFilterSP(new KisFilterPsColorLookup()));
     KisFilterRegistry::instance()->add(KisFilterSP(new KisFilterPsSelectiveColor()));

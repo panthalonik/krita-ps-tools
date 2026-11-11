@@ -971,6 +971,12 @@ class PropertiesDocker(DockWidget):
 
     def _snap(self, node):
         try:
+            if node.type() == "filterlayer" and node.filter().name() == "pscolorlookup":
+                # the "lut" property is a (megabytes long) table: compare its id
+                cfg = node.filter().configuration()
+                return "lut|%s|%s|%s|%s|%s" % (cfg.property("lut_id"), cfg.property("name"),
+                                               cfg.property("linear"), node.blendingMode(),
+                                               node.opacity())
             props = (node.filter().configuration().properties() if node.type() == "filterlayer"
                      else node.filterConfig().properties())
             return repr(sorted((k, repr(v)) for k, v in props.items())) + \
