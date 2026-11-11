@@ -83,6 +83,24 @@ jobs:
           python ci\make_plugin_zip.py C:\kb\out\ps_tools_plugin.zip
           python ci\check_plugin_zip.py C:\kb\krita\plugins\python\plugin_importer\plugin_importer.py C:\kb\out\ps_tools_plugin.zip
 
+      # Blend If, clipping and adjustment layers: rendered pixels and the
+      # exported PSD (the files are attached to the run as "smoke-test")
+      - name: Smoke test (renders + PSD export)
+        id: smoke
+        continue-on-error: true
+        timeout-minutes: 10
+        shell: pwsh
+        run: ci\smoke_test.ps1
+
+      - name: Upload smoke test files
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test
+          path: C:\kb\out\smoke
+          if-no-files-found: ignore
+
       - name: Publish release
         shell: pwsh
         env:
