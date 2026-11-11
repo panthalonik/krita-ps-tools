@@ -160,12 +160,13 @@ def main(args):
 
 
 def benchmark(k, w=3000, h=2000, stacks=6):
+    # variants: plain layers, clipping only, Blend If only, both
     """Seconds for a full re-render of a photobash-like document: the same
     layers plain, then as clipping stacks with Blend If (the cost of the
     engine patches compared with Krita's own compositing)."""
     import time
 
-    def build(ps):
+    def build(clip, blendif):
         d = k.createDocument(w, h, "bench", "RGBA", "U8", "", 72.0)
         root = d.rootNode()
         data = bytes(range(256)) * (w * h * 4 // 256)
@@ -177,22 +178,24 @@ def benchmark(k, w=3000, h=2000, stacks=6):
             top = d.createNode("top %d" % i, "paintlayer")
             root.addChildNode(top, base)
             top.setPixelData(data[::-1], 0, 0, w, h)
-            if ps:
+            if clip:
                 top.setInheritAlpha(True)
+            if blendif:
                 m = d.createTransparencyMask("Blend If (Gray | 20/60 255/255 | 0/0 200/240)")
                 top.addChildNode(m, None)
             curves = filter_layer(k, d, "curves %d" % i, "perchannel",
                                   {"curve0": "0,0;0.5,0.6;1,1;"})
             root.addChildNode(curves, top)
-            if ps:
+            if clip:
                 curves.setInheritAlpha(True)
             above = curves
         d.waitForDone()
         return d
 
     out = {}
-    for label, ps in (("plain", False), ("clip_blendif", True)):
-        d = build(ps)
+    for label, clip, blendif in (("plain", False, False), ("clip", True, False),
+                                 ("blendif", False, True), ("clip_blendif", True, True)):
+        d = build(clip, blendif)
         times = []
         for _ in range(3):
             t0 = time.perf_counter()

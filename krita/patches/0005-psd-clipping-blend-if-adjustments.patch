@@ -1,8 +1,20 @@
 diff --git a/libs/psd/psd_additional_layer_info_block.cpp b/libs/psd/psd_additional_layer_info_block.cpp
-index e6f3c9e..fad6a68 100644
+index e6f3c9e..e7e224a 100644
 --- a/libs/psd/psd_additional_layer_info_block.cpp
 +++ b/libs/psd/psd_additional_layer_info_block.cpp
-@@ -126,6 +126,15 @@ void PsdAdditionalLayerInfoBlock::readImpl(QIODevice &io)
+@@ -112,6 +112,11 @@ void PsdAdditionalLayerInfoBlock::readImpl(QIODevice &io)
+ 
+         dbgFile << "info block size" << blockSize << "(" << io.pos() << ")";
+ 
++        // ps_tools patch: Invert ('nvrt') has no data at all
++        if (blockSize == 0 && key == "nvrt" && psAdjustmentKey.isEmpty()) {
++            psAdjustmentKey = key;
++        }
++
+         if (blockSize == 0)
+             continue;
+ 
+@@ -126,6 +131,15 @@ void PsdAdditionalLayerInfoBlock::readImpl(QIODevice &io)
          }
          keys << key;
  

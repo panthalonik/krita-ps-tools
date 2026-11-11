@@ -35,7 +35,7 @@ index 0a05b65..ed34cc6 100644
      painter->setCompositeOpId(m_d->layer->compositeOpId());
      painter->setOpacityU8(m_d->layer->projectionLeaf()->opacity());
 diff --git a/libs/image/kis_mask.cc b/libs/image/kis_mask.cc
-index e83d83e..e085cf8 100644
+index e83d83e..5ade2d8 100644
 --- a/libs/image/kis_mask.cc
 +++ b/libs/image/kis_mask.cc
 @@ -32,6 +32,7 @@
@@ -58,7 +58,19 @@ index e83d83e..e085cf8 100644
      if (selection()) {
  
          flattenSelectionProjection(m_d->selection, applyRect);
-@@ -535,4 +541,22 @@ void KisMask::baseNodeChangedCallback()
+@@ -367,6 +373,11 @@ QRect KisMask::needRect(const QRect &rect,  PositionToFilthy pos) const
+ {
+     Q_UNUSED(pos);
+     QRect resultRect = rect;
++    // ps_tools patch: a "Blend If (...)" settings mask does not limit the
++    // layer - its pixels are not used (see kis_ps_blend_if.h)
++    if (psBlendIf::isSettingsMask(this)) {
++        return resultRect;
++    }
+     if (m_d->selection) {
+         QRect selectionExtent = m_d->selection->selectedRect();
+ 
+@@ -535,4 +546,22 @@ void KisMask::baseNodeChangedCallback()
          layer->notifyChildMaskChanged();
      }
      KisNode::baseNodeChangedCallback();
@@ -83,10 +95,10 @@ index e83d83e..e085cf8 100644
  }
 diff --git a/libs/image/kis_ps_blend_if.h b/libs/image/kis_ps_blend_if.h
 new file mode 100644
-index 0000000..db9770a
+index 0000000..8bb1c36
 --- /dev/null
 +++ b/libs/image/kis_ps_blend_if.h
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,294 @@
 +/*
 + *  Photoshop "Blend If" in the compositing engine (ps_tools patch).
 + *
@@ -266,12 +278,82 @@ index 0000000..db9770a
 +/// Fades the alpha of `layer` (a private copy of the layer's projection) in
 +/// `rect` by the Blend If settings; `below` is what the layer is composited
 +/// onto, in the same coordinates.
++/// 8 / 16 bit RGBA (B G R A): byte offset of the high byte of channel c
++/// and the pixel size, or false for other colour spaces
++inline bool integerLayout(const KoColorSpace *cs, int &pixelSize, int &step)
++{
++    if (cs->colorModelId() != RGBAColorModelID) return false;
++    const KoID depth = cs->colorDepthId();
++    if (depth == Integer8BitsColorDepthID && cs->pixelSize() == 4) {
++        pixelSize = 4; step = 1; return true;
++    }
++    if (depth == Integer16BitsColorDepthID && cs->pixelSize() == 8) {
++        pixelSize = 8; step = 2; return true;       // little endian: high byte = +1
++    }
++    return false;
++}
++
++/// The level 0..255 of an integer B G R A pixel (high bytes), the same
++/// weights as level() (0.30 / 0.59 / 0.11 in 1/256 steps)
++inline int integerLevel(int channel, const quint8 *px, int step)
++{
++    const int hi = step - 1;
++    const int b = px[0 * step + hi], g = px[1 * step + hi], r = px[2 * step + hi];
++    switch (channel) {
++    case 1: return r;
++    case 2: return g;
++    case 3: return b;
++    default: return (77 * r + 151 * g + 28 * b + 128) >> 8;
++    }
++}
++
 +inline void apply(const Settings &s, KisPaintDeviceSP layer, KisPaintDeviceSP below, const QRect &rect)
 +{
 +    if (rect.isEmpty() || !layer) return;
 +    const bool useSelf = !s.self.neutral();
 +    const bool useUnder = !s.under.neutral() && below;
 +    if (!useSelf && !useUnder) return;
++
++    // fast path: 8 / 16 bit RGBA - a 256 entry table per slider pair
++    int lpx = 0, lstep = 0, bpx = 0, bstep = 0;
++    if (integerLayout(layer->colorSpace(), lpx, lstep) &&
++        (!useUnder || integerLayout(below->colorSpace(), bpx, bstep))) {
++        float selfLut[256], underLut[256];
++        for (int v = 0; v < 256; v++) {
++            selfLut[v] = s.self.factor(float(v));
++            underLut[v] = s.under.factor(float(v));
++        }
++        const KoColorSpace *lcs = layer->colorSpace();
++        const int w = rect.width();
++        const int stripHeight = qBound(1, 65536 / qMax(1, w), rect.height());
++        QVector<quint8> lbuf, bbuf;
++        QVector<float> factor;
++        for (int y = rect.top(); y <= rect.bottom(); y += stripHeight) {
++            const int h = qMin(stripHeight, rect.bottom() - y + 1);
++            const int n = w * h;
++            lbuf.resize(n * lpx);
++            layer->readBytes(lbuf.data(), rect.left(), y, w, h);
++            if (useUnder) {
++                bbuf.resize(n * bpx);
++                below->readBytes(bbuf.data(), rect.left(), y, w, h);
++            }
++            factor.resize(n);
++            bool changes = false;
++            const quint8 *lp = lbuf.constData();
++            const quint8 *bp = bbuf.constData();
++            float *f = factor.data();
++            for (int i = 0; i < n; i++, lp += lpx, bp += bpx) {
++                float v = useSelf ? selfLut[integerLevel(s.channel, lp, lstep)] : 1.0f;
++                if (useUnder) v *= underLut[integerLevel(s.channel, bp, bstep)];
++                f[i] = v;
++                changes = changes || v < 1.0f;
++            }
++            if (!changes) continue;
++            lcs->applyAlphaNormedFloatMask(lbuf.data(), factor.constData(), n);
++            layer->writeBytes(lbuf.constData(), rect.left(), y, w, h);
++        }
++        return;
++    }
 +
 +    const KoColorSpace *lcs = layer->colorSpace();
 +    const KoColorSpace *bcs = useUnder ? below->colorSpace() : nullptr;
