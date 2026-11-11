@@ -11,8 +11,9 @@
 
 <p><b>Clipping mask</b>: <b>Alt + click</b> the line between two layers in the Layers docker, or press <b>Ctrl+Alt+G</b> (taken over from Krita's Quick Ungroup), or right-click and choose <i>Create / Release Clipping Mask</i>.</p>
 <ul>
-<li>The plugin builds a "<i>base</i> (clip)" group whose clipped layers use Inherit Alpha. The base's blending mode moves to the group.</li>
-<li>A layer dragged into or created inside the group is clipped automatically. A layer dragged out of it is released.</li>
+<li><b>Krita PS</b>: clipping is part of the engine, exactly like Photoshop. Krita's <i>Inherit Alpha</i> switch (shown as <i>Clipping Mask</i>) is the clipping mask: the layer is clipped to the nearest unclipped layer below it in the same group, the stack is drawn on its own (clipped adjustment layers change only the base) and the base's blending mode applies to the whole stack. No hidden groups – layers can be moved, grouped and merged freely, and PSD files keep the clipping. "(clip)" groups of older documents are taken apart when the document is opened (the result looks the same).</li>
+<li>A layer dragged into or created inside a stack (or created while a clipped layer is selected) is clipped automatically. A clipped layer dragged out of its stack is released.</li>
+<li>Official Krita: the plugin builds a "<i>base</i> (clip)" group whose clipped layers use Inherit Alpha. The base's blending mode moves to the group.</li>
 </ul>
 
 <p><b>Masks</b></p>
@@ -104,7 +105,7 @@ Right-click the strip to turn auto-collapse on or off. The strip hides in canvas
 <h3>Photoshop-style Layers docker</h3>
 <p>Krita's Layers docker shows clipping stacks and layer masks the way Photoshop does:</p>
 <ul>
-<li>The plugin's clipping groups ("… (clip)") have no row of their own: the base layer is underlined, the clipped layers above it are indented with a clipping arrow.</li>
+<li>Clipping stacks look like in Photoshop: the base layer is underlined, the clipped layers above it are indented with a clipping arrow. (Official Krita: the plugin's "… (clip)" groups have no row of their own.)</li>
 <li>A layer's transparency mask is shown as a second thumbnail next to the layer thumbnail instead of a separate row. Click it to edit the mask, click the layer thumbnail to edit the layer; the edited one has a frame. Shift+click the mask thumbnail = disable/enable the mask, Alt+click = show the mask alone.</li>
 <li>Other masks (filter masks, extra transparency masks, Blend If) keep their own rows.</li>
 <li>Only the look changes: eye, lock and alpha icons, drag &amp; drop, renaming and the right-click menu are Krita's own. Turn it off in <i>Tools → Scripts → Photoshop-style Layers docker look</i>.</li>
@@ -112,6 +113,6 @@ Right-click the strip to turn auto-collapse on or off. The strip hides in canvas
 
 <h3>Clipping masks and Undo</h3>
 <ul>
-<li>Create / Release Clipping Mask is one undo step: one Ctrl+Z undoes it completely (the plugin uses Krita's own Quick Group, Quick Ungroup and Move Layer Down commands on the selected layers).</li>
+<li>Create / Release Clipping Mask is one undo step: one Ctrl+Z undoes it completely (Krita PS: Krita's own clipping switch; official Krita: Krita's Quick Group, Quick Ungroup and Move Layer Down commands on the selected layers). Releasing a clipped layer also releases the clipped layers above it, like Photoshop.</li>
 <li>Grouping a base layer together with its clipped layers (Ctrl+G) keeps the clipping inside the new group, like in Photoshop. Releasing a layer inside such a group unclips it in place.</li>
 </ul>

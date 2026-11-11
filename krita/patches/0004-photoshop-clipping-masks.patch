@@ -1,0 +1,259 @@
+diff --git a/libs/image/kis_async_merger.cpp b/libs/image/kis_async_merger.cpp
+index 69b1a36..78ab2ea 100644
+--- a/libs/image/kis_async_merger.cpp
++++ b/libs/image/kis_async_merger.cpp
+@@ -38,6 +38,7 @@
+ #include "kis_effect_mask.h"
+ #include "kis_transparency_mask.h"
+ #include "kis_pixel_selection.h"
++#include "kis_ps_clipping.h"
+ 
+ 
+ //#define DEBUG_MERGER
+@@ -271,6 +272,49 @@ void closePassThroughScope(KisNodeSP node, const QRect &rect, KisPaintDeviceSP p
+     KisPainter::copyAreaOptimized(rc.topLeft(), after, projection, rc, selection);
+ }
+ 
++/*********************************************************************/
++/*              Photoshop clipping masks (ps_tools patch)            */
++/*********************************************************************/
++
++/**
++ * A base layer and the layers clipped to it are composited on their own
++ * (see kis_ps_clipping.h): while the stack is open, the merger's current
++ * projection is a private device; when the stack ends it is composited
++ * onto the real projection with the base's blending mode.
++ */
++struct ClipStack {
++    KisNodeSP base;
++    KisPaintDeviceSP below;         // the real projection of the level
++    KisPaintDeviceSP stack;         // base + clipped layers
++    QRect rect;
++};
++
++void openClipStack(ClipStack &s, KisNodeSP base, const QRect &rect, KisPaintDeviceSP &projection)
++{
++    s.base = base;
++    s.below = projection;
++    s.stack = new KisPaintDevice(projection->colorSpace());
++    s.stack->prepareClone(projection);
++    s.rect = rect;
++    projection = s.stack;
++}
++
++void closeClipStack(ClipStack &s, KisPaintDeviceSP &projection)
++{
++    if (!s.base) return;
++    projection = s.below;
++    // a hidden base hides its stack (an empty stack must not be composited
++    // with modes like Copy or Destination In)
++    if (!s.rect.isEmpty() && s.below && s.base->projectionLeaf()->visible()) {
++        KisPainter gc(s.below);
++        gc.setCompositeOpId(s.base->compositeOpId());   // the base's mode, for the whole stack
++        gc.setOpacityU8(OPACITY_OPAQUE_U8);              // the base's opacity is already in
++        gc.setChannelFlags(s.base->projectionLeaf()->channelFlags());
++        gc.bitBlt(s.rect.topLeft(), s.stack, s.rect);
++    }
++    s = ClipStack();
++}
++
+ } // namespace
+ 
+ 
+@@ -283,6 +327,7 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
+ 
+     const bool useTempProjections = walker.needRectVaries();
+     PassThroughScopes passThroughScopes;
++    ClipStack clipStack;
+ 
+     while(!leafStack.isEmpty()) {
+         KisMergeWalker::JobItem item = leafStack.pop();
+@@ -323,6 +368,12 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
+             setupProjection(currentLeaf, applyRect, useTempProjections);
+         }
+ 
++        // ps_tools patch: the clipping stack ends at the first layer that is
++        // not clipped to its base
++        if (clipStack.base && !psClip::inStackOf(currentLeaf->node().data(), clipStack.base)) {
++            closeClipStack(clipStack, m_currentProjection);
++        }
++
+         if (m_currentProjection) {
+             openPassThroughScopes(currentLeaf->node(), applyRect, m_currentProjection, passThroughScopes);
+             closePassThroughScope(currentLeaf->node(), applyRect, m_currentProjection,
+@@ -359,9 +410,19 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
+             /* nothing to do */
+         }
+ 
++        // ps_tools patch: a base with clipped layers above it is drawn into a
++        // stack of its own (its original was computed from the real image
++        // below, the clipped layers' originals now come from the stack)
++        if (clipStack.base) {
++            clipStack.rect |= applyRect;
++        } else if (m_currentProjection && psClip::opensStack(currentLeaf->node().data())) {
++            openClipStack(clipStack, currentLeaf->node(), applyRect, m_currentProjection);
++        }
++
+         compositeWithProjection(currentLeaf, applyRect);
+ 
+         if(item.m_position & KisMergeWalker::N_TOPMOST) {
++            closeClipStack(clipStack, m_currentProjection);
+             writeProjection(currentLeaf, useTempProjections, applyRect);
+             resetProjection();
+         }
+@@ -371,6 +432,8 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
+                  walker.levelOfDetail());
+     }
+ 
++    closeClipStack(clipStack, m_currentProjection);
++
+     if(notifyClones) {
+         doNotifyClones(walker);
+     }
+diff --git a/libs/image/kis_layer_properties_icons.cpp b/libs/image/kis_layer_properties_icons.cpp
+index 1f07d78..59750a3 100644
+--- a/libs/image/kis_layer_properties_icons.cpp
++++ b/libs/image/kis_layer_properties_icons.cpp
+@@ -23,7 +23,8 @@ Q_GLOBAL_STATIC(KisLayerPropertiesIcons, s_instance)
+ const KoID KisLayerPropertiesIcons::locked("locked", ki18n("Locked"));
+ const KoID KisLayerPropertiesIcons::visible("visible", ki18n("Visible"));
+ const KoID KisLayerPropertiesIcons::layerStyle("layer-style", ki18n("Layer Style"));
+-const KoID KisLayerPropertiesIcons::inheritAlpha("inherit-alpha", ki18n("Inherit Alpha"));
++// ps_tools patch: in Krita PS "inherit alpha" is a Photoshop clipping mask (kis_ps_clipping.h)
++const KoID KisLayerPropertiesIcons::inheritAlpha("inherit-alpha", ki18n("Clipping Mask"));
+ const KoID KisLayerPropertiesIcons::alphaLocked("alpha-locked", ki18n("Alpha Locked"));
+ const KoID KisLayerPropertiesIcons::onionSkins("onion-skins", ki18n("Onion Skins"));
+ const KoID KisLayerPropertiesIcons::passThrough("pass-through", ki18n("Pass Through"));
+diff --git a/libs/image/kis_projection_leaf.cpp b/libs/image/kis_projection_leaf.cpp
+index 2b8e390..7cb530f 100644
+--- a/libs/image/kis_projection_leaf.cpp
++++ b/libs/image/kis_projection_leaf.cpp
+@@ -21,6 +21,7 @@
+ #include "kis_async_merger.h"
+ #include "kis_node_graph_listener.h"
+ #include "kis_clone_layer.h"
++#include "kis_ps_clipping.h"
+ 
+ 
+ struct Q_DECL_HIDDEN KisProjectionLeaf::Private
+@@ -332,6 +333,16 @@ QBitArray KisProjectionLeaf::channelFlags() const
+         channelFlags = KritaUtils::mergeChannelFlags(channelFlags, parentChannelFlags);
+     }
+ 
++    /**
++     * ps_tools patch: "inherit alpha" is a Photoshop clipping mask (see
++     * kis_ps_clipping.h). A clipped layer with no layer below it to clip
++     * to is drawn normally, like in Photoshop.
++     */
++    if (!channelFlags.isEmpty() && psClip::clipFlag(m_d->node.data()) &&
++        !psClip::baseOf(m_d->node.data())) {
++        channelFlags |= m_d->node->colorSpace()->channelFlags(false, true);
++    }
++
+     return channelFlags;
+ }
+ 
+diff --git a/libs/image/kis_ps_clipping.h b/libs/image/kis_ps_clipping.h
+new file mode 100644
+index 0000000..5cb0da0
+--- /dev/null
++++ b/libs/image/kis_ps_clipping.h
+@@ -0,0 +1,98 @@
++/*
++ *  Photoshop clipping masks (ps_tools patch).
++ *
++ *  In Krita PS the "Inherit Alpha" switch of a layer means what Photoshop's
++ *  "Create Clipping Mask" means: the layer is clipped to the nearest layer
++ *  below it that is not clipped itself (the base, in the same group). The
++ *  base and the layers clipped to it - the clipping stack - are composited
++ *  on their own (KisAsyncMerger::startMerge):
++ *
++ *    - the base is drawn onto an empty device, with its own opacity;
++ *    - every clipped layer is drawn onto that device keeping its alpha
++ *      (Krita's alpha-locked compositing), so it only shows where the base
++ *      is, and a clipped adjustment layer only changes the base;
++ *    - the result is composited onto the image below with the base's
++ *      blending mode ("Blend Clipped Layers as Group", Photoshop's default).
++ *
++ *  No hidden groups: clipping follows the layer order live, like in
++ *  Photoshop (a layer clips to whatever base is below it now).
++ *  A clipped layer with no layer below it is drawn normally. A pass-through
++ *  group cannot be a base or a clipped member of a stack (it has no pixels
++ *  of its own): above such a group Krita's original "inherit alpha" applies.
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef KIS_PS_CLIPPING_H
++#define KIS_PS_CLIPPING_H
++
++#include "kis_group_layer.h"
++#include "kis_layer.h"
++#include "kis_node.h"
++
++namespace psClip {
++
++inline bool isPassThroughGroup(const KisNode *node)
++{
++    const KisGroupLayer *group = qobject_cast<const KisGroupLayer *>(node);
++    return group && group->passThroughMode();
++}
++
++/// The layer's clipping switch (Krita: "inherit alpha").
++inline bool clipFlag(const KisNode *node)
++{
++    const KisLayer *layer = qobject_cast<const KisLayer *>(node);
++    return layer && layer->alphaChannelDisabled();
++}
++
++inline KisNodeSP layerBelow(const KisNode *node)
++{
++    for (KisNodeSP s = node->prevSibling(); s; s = s->prevSibling()) {
++        if (s->inherits("KisLayer")) return s;
++    }
++    return KisNodeSP();
++}
++
++inline KisNodeSP layerAbove(const KisNode *node)
++{
++    for (KisNodeSP s = node->nextSibling(); s; s = s->nextSibling()) {
++        if (s->inherits("KisLayer")) return s;
++    }
++    return KisNodeSP();
++}
++
++/// The base a clipped layer is clipped to, or null (not clipped / nothing below).
++inline KisNodeSP baseOf(const KisNode *node)
++{
++    if (!node || !clipFlag(node)) return KisNodeSP();
++    KisNodeSP s = layerBelow(node);
++    while (s && clipFlag(s.data())) {
++        s = layerBelow(s.data());
++    }
++    return s;
++}
++
++/// True for a clipped layer that has a base (= PSD "clipping" flag).
++inline bool isClipped(const KisNode *node)
++{
++    return bool(baseOf(node));
++}
++
++/// A base with at least one layer clipped to it: starts an isolated stack.
++inline bool opensStack(const KisNode *node)
++{
++    if (!node || !node->inherits("KisLayer") || clipFlag(node) || isPassThroughGroup(node)) {
++        return false;
++    }
++    KisNodeSP up = layerAbove(node);
++    return up && clipFlag(up.data()) && !isPassThroughGroup(up.data());
++}
++
++/// A layer drawn inside the stack of `base`.
++inline bool inStackOf(const KisNode *node, const KisNodeSP &base)
++{
++    return node && base && clipFlag(node) && !isPassThroughGroup(node) && baseOf(node) == base;
++}
++
++} // namespace psClip
++
++#endif

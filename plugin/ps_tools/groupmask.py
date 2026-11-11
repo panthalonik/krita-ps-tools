@@ -141,6 +141,10 @@ def release_all(doc):
 def sync(doc, active=None):
     """Called from the plugin's poll. Returns True when something was written."""
     if core.engine_level() >= 1:
+        # nothing written by an older version: nothing to give back (checked
+        # first - the idle test takes the image lock)
+        if not controlled(doc):
+            return False
         if core.idle(doc):
             return release_all(doc)
         return False

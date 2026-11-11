@@ -333,11 +333,20 @@ def _set_blocked(reason):
         b["logged"] = True
 
 
+_native_ticks = [0]
+
+
 def tick(doc):
     """Called from the plugin's poll timer (every ~300 ms)."""
     if doc is None or getattr(core, "_preview_busy", 0) or not enabled():
         return
     key = _doc_key(doc)
+    if core.native_blend_if() and _state.get(key) is None:
+        # Krita PS: normally nothing to refresh at all - only look now and
+        # then for old computed layers (a LUT file that could not be found)
+        _native_ticks[0] += 1
+        if _native_ticks[0] % 20:
+            return
     reason = _busy(doc)
     if reason:
         if reason == "mouse button down" and _over_canvas():

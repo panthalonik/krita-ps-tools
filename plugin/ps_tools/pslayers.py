@@ -491,7 +491,7 @@ class Styler(QObject):
         self._sig = None
         self.click_filter = MaskClickFilter(self)
         self.timer = QTimer(self)
-        self.timer.setInterval(1000)
+        self.timer.setInterval(2000)          # safety net; model signals do the rest
         self.timer.timeout.connect(self.rebuild)
         self.soon = QTimer(self)
         self.soon.setSingleShot(True)
@@ -539,15 +539,26 @@ class Styler(QObject):
             return
         self._model = m
         for sig in (m.rowsInserted, m.rowsRemoved, m.rowsMoved, m.modelReset,
-                    m.layoutChanged, m.dataChanged):
+                    m.layoutChanged):
             try:
                 sig.connect(self._schedule)
             except Exception:
                 pass
+        try:
+            # thumbnails change on every stroke: those updates are batched
+            m.dataChanged.connect(self._schedule_data)
+        except Exception:
+            pass
 
     def _schedule(self, *a):
+        clip.mark_dirty()
         if not self.soon.isActive():
-            self.soon.start()
+            self.soon.start(33)
+
+    def _schedule_data(self, *a):
+        clip.mark_dirty()
+        if not self.soon.isActive():
+            self.soon.start(250)
 
     def error(self, text):
         self._errors += 1
@@ -588,6 +599,11 @@ class Styler(QObject):
             return
         if not self.active or not self.view.isVisible():
             return
+        # painting / transforming on the canvas: look again after it
+        from PyQt5.QtWidgets import QApplication
+        if QApplication.mouseButtons() != Qt.NoButton and not self.view.underMouse():
+            self.soon.start(250)
+            return
         try:
             self._rebuild()
         except Exception:
@@ -621,6 +637,21 @@ class Styler(QObject):
 
         info = {}
         expand = []
+        native = core.native_clipping()
+
+        def native_kinds(layers_top_first):
+            """Krita PS: uid -> "base" / "clipped" from the layer order (the
+            engine clips "inherit alpha" layers to the unclipped one below)."""
+            out = {}
+            base = None
+            for n in reversed(layers_top_first):          # bottom to top
+                uid = n.uniqueId().toString()
+                if n.inheritAlpha() and base is not None:
+                    out[uid] = "clipped"
+                    out[base] = "base"
+                elif not n.inheritAlpha():
+                    base = uid
+            return out
 
         def walk(pidx, node, path, unindent, in_clip):
             kids = list(reversed(node.childNodes()))
@@ -637,6 +668,7 @@ class Styler(QObject):
                 row_nodes.append((row, idx, kids[j]))
                 j += 1
             layers_here = [n for _r, _i, n in row_nodes if core.is_layer(n)]
+            kinds = native_kinds(layers_here) if native else None
             # the base is only marked when something is clipped to it
             base = None
             if in_clip and len(layers_here) > 1 and any(n.inheritAlpha() for n in layers_here[:-1]):
@@ -651,7 +683,9 @@ class Styler(QObject):
                     pass
                 info[rp] = ri
                 is_layer = core.is_layer(n)
-                if in_clip and is_layer:
+                if kinds is not None and is_layer:
+                    ri.kind = kinds.get(ri.uid)
+                elif in_clip and is_layer:
                     ri.kind = "base" if (base is not None and clip._same(n, base)) else (
                         "clipped" if n.inheritAlpha() else None)
                 if is_layer and n.type() == "grouplayer" and clip._is_plugin_group(n) \
@@ -662,7 +696,7 @@ class Styler(QObject):
                         expand.append(idx)
                     walk(idx, n, rp, unindent + 1, True)
                     continue
-                gl = clip._layers(n) if (is_layer and n.type() == "grouplayer") else []
+                gl = clip._layers(n) if (is_layer and n.type() == "grouplayer" and not native) else []
                 if len(gl) > 1 and not gl[0].inheritAlpha() and any(k.inheritAlpha() for k in gl[1:]):
                     # the user's own group holding a clipping stack: keep the
                     # group row, mark base / clipped layers inside

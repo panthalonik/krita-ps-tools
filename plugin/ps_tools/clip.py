@@ -12,6 +12,13 @@ add), so one Ctrl+Z would leave the layer removed. Clip / release therefore
 use Krita's own layer commands (Quick Group, Quick Ungroup, Move Layer Down)
 on the layers selected in the Layers docker - each is ONE undo step. Only if
 the docker cannot be found the old remove + add way is used.
+
+Krita PS (core.native_clipping()): clipping is part of the engine. "Inherit
+Alpha" IS the clipping mask: a layer with it is clipped to the nearest
+unclipped layer below it, live, with no groups at all (see the "native"
+section at the end). Clip / release just switch it (Krita's own undoable
+"toggle_layer_inherit_alpha" command); old "(clip)" groups are taken apart
+when a document is opened.
 """
 import time
 
@@ -80,6 +87,8 @@ def is_clip_group(node):
 
 
 def is_clipped(node):
+    if core.native_clipping():
+        return native_is_clipped(node)
     p = node.parentNode() if node is not None else None
     return (node is not None and core.is_layer(node) and node.inheritAlpha()
             and p is not None and p.parentNode() is not None
@@ -87,6 +96,8 @@ def is_clipped(node):
 
 
 def is_clip_base(node):
+    if core.native_clipping():
+        return native_is_base(node)
     p = node.parentNode() if node is not None else None
     return p is not None and is_clip_group(p) and _same(_layers(p)[0], node)
 
@@ -350,6 +361,8 @@ def _release_fallback(doc, layer):
 def toggle(doc, layer):
     if layer is None or not core.is_layer(layer) or layer.parentNode() is None:
         raise ClipError(u"Select a layer.")
+    if core.native_clipping():
+        return native_toggle(doc, layer)
     if is_clipped(layer):
         release(doc, layer)
     elif is_clip_base(layer):
@@ -370,6 +383,8 @@ def toggle(doc, layer):
 def widen_to_stacks(nodes):
     """-> (nodes with members of plugin clipping groups replaced by their
     group, True when something was replaced)."""
+    if core.native_clipping():
+        return native_widen(nodes)
     out, seen, changed = [], set(), False
     for n in nodes:
         p = n.parentNode()
@@ -425,13 +440,16 @@ def wants_pass_through(group, baked_keys=()):
     if (group is None or group.type() != "grouplayer" or _is_plugin_group(group)
             or group.passThroughMode() or group.inheritAlpha()):
         return False
+    # Krita PS: masks of pass-through groups and clipping stacks inside them
+    # are handled by the engine
+    native = core.native_clipping()
     found = False
     for c in group.childNodes():
-        if core.is_mask(c):
+        if core.is_mask(c) and not native:
             return False
         if not core.is_layer(c):
             continue
-        if c.inheritAlpha():
+        if c.inheritAlpha() and not native:
             return False
         if c.type() == "filterlayer" or _key(c) in baked_keys:
             found = True
@@ -490,6 +508,8 @@ def sync(doc):
     - a clipped layer dragged out of its stack is released (but one grouped
       together with its base stays clipped, like in PS),
     - the base gets its own blending mode back when it leaves the group."""
+    if core.native_clipping():
+        return native_sync(doc)
     if time.time() < _busy_until[0]:
         return False
     changed = False
@@ -620,3 +640,311 @@ def sync(doc):
     if changed:
         doc.refreshProjection()
     return changed
+
+
+# ================================================================ native
+# Krita PS (core.native_clipping()): the engine does Photoshop clipping
+# itself. A layer with "Inherit Alpha" is clipped to the nearest layer below
+# it that does not have it (the base), in the same group - always, live,
+# wherever the layers are moved. The plugin only switches the flag (with
+# Krita's own undoable command) and keeps a few Photoshop habits:
+#   - a new layer made inside a clipping stack is clipped too;
+#   - a layer dragged into a stack is clipped, a clipped layer dragged out of
+#     one is released;
+#   - a clipped group is not pass-through (it is drawn like one layer);
+#   - "(clip)" groups of older documents are taken apart once.
+
+_nat_neighbours = {}      # layer key -> (parent key, below key, above key)
+_nat_dirty = [True]
+_nat_ticks = [0]
+_nat_migrated = set()     # documents whose "(clip)" groups were taken apart
+NATIVE_FULL_EVERY = 10    # polls: look even when nothing said "changed"
+
+
+def mark_dirty(*_a):
+    """Called when the Layers docker reports a change."""
+    _nat_dirty[0] = True
+
+
+def sibling_above(node):
+    parent = node.parentNode() if node is not None else None
+    if parent is None:
+        return None
+    sibs = _layers(parent)
+    for i, s in enumerate(sibs):
+        if _same(s, node):
+            return sibs[i + 1] if i + 1 < len(sibs) else None
+    return None
+
+
+def native_base(node):
+    """The base a clipped layer is clipped to (None: not clipped)."""
+    if node is None or not core.is_layer(node) or not node.inheritAlpha():
+        return None
+    parent = node.parentNode()
+    if parent is None:
+        return None
+    sibs = _layers(parent)
+    i = next((k for k, s in enumerate(sibs) if _same(s, node)), None)
+    if i is None:
+        return None
+    for s in reversed(sibs[:i]):
+        if not s.inheritAlpha():
+            return s
+    return None
+
+
+def native_is_clipped(node):
+    return native_base(node) is not None
+
+
+def native_is_base(node):
+    if node is None or not core.is_layer(node) or node.inheritAlpha():
+        return False
+    up = sibling_above(node)
+    return up is not None and up.inheritAlpha()
+
+
+def native_stack(node):
+    """[base, clipped...] (bottom to top) the layer belongs to, or [node]."""
+    base = node if native_is_base(node) else native_base(node)
+    if base is None:
+        return [node]
+    sibs = _layers(base.parentNode())
+    i = next(k for k, s in enumerate(sibs) if _same(s, base))
+    out = [base]
+    for s in sibs[i + 1:]:
+        if not s.inheritAlpha():
+            break
+        out.append(s)
+    return out
+
+
+def _set_clip(doc, nodes, on, active=None):
+    """Switches clipping of the layers - one undoable Krita command (the
+    Layers docker's own "inherit alpha" toggle on the selected layers)."""
+    todo = [n for n in nodes if core.is_layer(n) and bool(n.inheritAlpha()) != on]
+    if not todo:
+        return False
+    if on:
+        for n in todo:
+            # a pass-through group has no pixels of its own to clip
+            if n.type() == "grouplayer" and n.passThroughMode():
+                n.setPassThroughMode(False)
+    active = active or todo[-1]
+    if _select(doc, todo, todo[-1]) and _run("toggle_layer_inherit_alpha"):
+        def done():
+            doc.setActiveNode(active)
+        _after(done, lambda: all(bool(n.inheritAlpha()) == on for n in todo))
+        return True
+    for n in todo:                       # no Layers docker: no undo, but works
+        n.setInheritAlpha(on)
+    doc.setActiveNode(active)
+    doc.refreshProjection()
+    return True
+
+
+def native_toggle(doc, layer):
+    if native_is_clipped(layer):
+        # PS: releases the layer and the clipped layers above it
+        stack = native_stack(layer)
+        i = next(k for k, s in enumerate(stack) if _same(s, layer))
+        _set_clip(doc, stack[i:], False, active=layer)
+        return
+    if layer.inheritAlpha():
+        # flagged but nothing to clip to (bottom of its group)
+        _set_clip(doc, [layer], False, active=layer)
+        return
+    if sibling_below(layer) is None:
+        raise ClipError(u"There is no layer below this one to clip it to.")
+    _set_clip(doc, [layer], True, active=layer)
+
+
+def native_widen(nodes):
+    """Ctrl+G keeps clipping stacks together: a selected member of a stack
+    brings the whole stack (base + clipped layers) into the new group."""
+    out, seen, changed = [], set(), False
+    for n in nodes:
+        group = native_stack(n) if core.is_layer(n) else [n]
+        if len(group) > 1:
+            changed = changed or len(group) > 1
+        for m in group:
+            k = _key(m)
+            if k not in seen:
+                seen.add(k)
+                out.append(m)
+    changed = changed and len(out) != len(nodes)
+    return out, changed
+
+
+def _levels(node):
+    """(parent, [child layers bottom to top]) for every group, root first."""
+    kids = _layers(node)
+    yield node, kids
+    for k in kids:
+        if k.type() == "grouplayer":
+            for x in _levels(k):
+                yield x
+
+
+def migrate_clip_groups(doc):
+    """Takes apart the "<base> (clip)" groups of documents made before Krita
+    PS clipped natively: the layers go back to the group's place, the base
+    gets the group's blending mode / opacity / visibility. The result looks
+    the same. A group the engine cannot replace exactly (its own mask while
+    the base has one too, a layer style, clipped itself) is left as it is -
+    it still renders correctly. Returns the number of groups taken apart."""
+    groups = [n for n in core.iter_layers(doc.rootNode()) if _is_plugin_group(n)]
+    done = 0
+    for g in reversed(groups):                  # inner groups first
+        try:
+            if _migrate_group(doc, g):
+                done += 1
+        except Exception as e:
+            _log(u"could not take apart %s: %s" % (g.name(), e))
+    if done:
+        _log(u"took apart %d clipping group(s) - clipping is native now" % done)
+    return done
+
+
+def _log(text):
+    try:
+        from .extension import log
+        log(text)
+    except Exception:
+        pass
+
+
+def _migrate_group(doc, g):
+    parent = g.parentNode()
+    layers = _layers(g)
+    if parent is None or not layers or g.inheritAlpha():
+        return False
+    base = layers[0]
+    gmasks = [c for c in g.childNodes() if core.is_mask(c)]
+    if gmasks and any(core.is_mask(c) and c.type() == "transparencymask"
+                      for c in base.childNodes()):
+        return False
+    _busy_until[0] = time.time() + 1.5
+    active = doc.activeNode()
+    mode = g.blendingMode()
+    if mode != "normal" and base.blendingMode() == "normal":
+        base.setBlendingMode(mode)
+    _base_modes.pop(_key(base), None)
+    try:
+        op = g.opacity()
+        if op < 255:
+            base.setOpacity(int(round(base.opacity() * op / 255.0)))
+    except Exception:
+        pass
+    if not g.visible():
+        base.setVisible(False)
+    anchor = g
+    for n in layers:                            # bottom to top, above the group
+        _move(n, parent, anchor)
+        anchor = n
+        if _same(n, base):
+            if n.inheritAlpha():
+                n.setInheritAlpha(False)
+        elif not n.inheritAlpha():
+            n.setInheritAlpha(True)
+        _tracked.discard(_key(n))
+    prev = None
+    for m in gmasks:                            # a mask of the stack = of its base
+        copy = m.duplicate()
+        if copy is not None:
+            base.addChildNode(copy, prev)
+            prev = copy
+    g.remove()
+    if active is not None:
+        try:
+            doc.setActiveNode(active)
+        except Exception:
+            pass
+    return True
+
+
+def native_sync(doc):
+    """The few Photoshop habits on top of the engine's clipping (see above).
+    Cheap: does nothing unless the Layers docker reported a change (or now
+    and then), and never while a button is held (painting, dragging)."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+    if time.time() < _busy_until[0]:
+        return False
+    if QApplication.mouseButtons() != Qt.NoButton:
+        return False
+    key = _key(doc.rootNode())
+    if key not in _nat_migrated:
+        if not core.idle(doc):
+            return False
+        _nat_migrated.add(key)
+        if migrate_clip_groups(doc):
+            doc.refreshProjection()
+            _nat_dirty[0] = True
+            return True
+    _nat_ticks[0] += 1
+    if not _nat_dirty[0] and _nat_ticks[0] % NATIVE_FULL_EVERY:
+        return False
+    _nat_dirty[0] = False
+    act = doc.activeNode()
+    now = {}
+    clip_on, clip_off = [], []
+    first_look = not _nat_neighbours
+    for parent, kids in _levels(doc.rootNode()):
+        pkey = _key(parent)
+        for i, n in enumerate(kids):
+            k = _key(n)
+            below = _key(kids[i - 1]) if i > 0 else None
+            above = _key(kids[i + 1]) if i + 1 < len(kids) else None
+            now[k] = (pkey, below, above)
+            if first_look:
+                continue
+            old = _nat_neighbours.get(k)
+            up = kids[i + 1] if i + 1 < len(kids) else None
+            dn = kids[i - 1] if i > 0 else None
+            if old is None:
+                # PS: a new layer inside a clipping stack is clipped too, and
+                # so is one made while a clipped layer was selected
+                if not n.inheritAlpha() and dn is not None and (
+                        (up is not None and up.inheritAlpha())
+                        or (dn.inheritAlpha() and _prev_active[0] == _key(dn))):
+                    clip_on.append(n)
+                if n.type() == "grouplayer" and wants_pass_through(n):
+                    n.setPassThroughMode(True)
+                # PS: a new layer made while a group is selected goes above it
+                if (_prev_active[0] == pkey and parent.parentNode() is not None
+                        and up is None and _same(act, n)):
+                    if _select(doc, [n], n) and _run("move_layer_up"):
+                        _nat_dirty[0] = True
+                continue
+            moved = old[0] != pkey or (old[1] != below and old[2] != above)
+            if not moved:
+                continue
+            if (up is not None and up.inheritAlpha() and dn is not None
+                    and not n.inheritAlpha() and old[2] != _key(up)):
+                clip_on.append(n)                  # dropped inside a stack
+            elif n.inheritAlpha() and (dn is None or not (dn.inheritAlpha() or (
+                    up is not None and up.inheritAlpha()))) and not _moved_with_base(n, dn, old):
+                clip_off.append(n)                 # dragged out of its stack
+    for parent, kids in _levels(doc.rootNode()):
+        for n in kids:
+            if n.type() == "grouplayer" and n.inheritAlpha() and n.passThroughMode():
+                n.setPassThroughMode(False)        # a clipped group is one "layer"
+    _nat_neighbours.clear()
+    _nat_neighbours.update(now)
+    _prev_active[0] = _key(act) if act is not None else None
+    changed = False
+    if clip_on:
+        changed = _set_clip(doc, clip_on, True, active=act) or changed
+    if clip_off:
+        changed = _set_clip(doc, clip_off, False, active=act) or changed
+    if changed:
+        _nat_dirty[0] = True
+    return changed
+
+
+def _moved_with_base(n, dn, old):
+    """The layer moved together with the layer it was clipped to (e.g. the
+    whole stack was dragged): keep it clipped."""
+    return dn is not None and old[1] == _key(dn)

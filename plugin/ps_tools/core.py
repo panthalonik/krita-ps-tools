@@ -255,13 +255,22 @@ def engine_level():
     """0 in the official Krita; in Krita PS (this repository's build) the
     level of the C++ additions (see krita/plugins/filters/psfilters):
     1 = C++ filters + native masks on pass-through groups,
-    2 = + Blend If in the compositing engine."""
+    2 = + Blend If in the compositing engine,
+    3 = + Photoshop clipping masks in the engine (and in PSD files)."""
     try:
         from PyQt5.QtWidgets import QApplication
         v = QApplication.instance().property("ps_tools_engine")
         return int(v) if v is not None else 0
     except Exception:
         return 0
+
+
+def native_clipping():
+    """Krita PS: clipping masks are part of the engine. "Inherit Alpha" of a
+    layer is Photoshop's clipping mask - it clips to the nearest unclipped
+    layer below it, the stack is composited on its own with the base's
+    blending mode, and PSD files keep it. No hidden "(clip)" groups."""
+    return engine_level() >= 3
 
 
 def native_blend_if():

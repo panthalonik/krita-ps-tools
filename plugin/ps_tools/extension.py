@@ -755,7 +755,8 @@ class PSToolsExtension(Extension):
             if clip.is_clipped(node):
                 a = QAction(u"Release Clipping Mask", menu)
                 new.append(a)
-            elif not clip.is_clip_base(node) and clip.sibling_below(node) is not None:
+            elif ((core.native_clipping() or not clip.is_clip_base(node))
+                  and clip.sibling_below(node) is not None):
                 a = QAction(u"Create Clipping Mask", menu)
                 new.append(a)
             else:

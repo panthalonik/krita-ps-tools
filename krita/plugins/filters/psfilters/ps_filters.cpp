@@ -33,7 +33,10 @@ K_PLUGIN_FACTORY_WITH_JSON(KritaPsFiltersFactory, "kritapsfilters.json", registe
 ///   1 = C++ filters + native masks on pass-through groups
 ///   2 = + Blend If in the compositing engine (patches/0002) and filter
 ///       layers that redraw by themselves after a scripted setFilter() (0003)
-static const int PS_TOOLS_ENGINE_LEVEL = 2;
+///   3 = + Photoshop clipping masks in the engine: "inherit alpha" clips to
+///       the base below, the stack is composited on its own (0004), and PSD
+///       files keep clipping and Blend If (0005)
+static const int PS_TOOLS_ENGINE_LEVEL = 3;
 
 KritaPsFilters::KritaPsFilters(QObject *parent, const QVariantList &)
     : QObject(parent)

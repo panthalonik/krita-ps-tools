@@ -63,6 +63,20 @@ Dotyczy Krita PS (build z tego repozytorium). W oficjalnej Kricie wtyczka dział
 
 Testy: python verification/test_native.py (14 testów, atrapa API Krity); testy kerneli C++ sprawdzają teraz także format tablicy LUT tworzony przez wtyczkę.
 
+## Wersja en10 — clipping maski w silniku, grupowanie, PSD, wydajność (Krita PS)
+
+- Clipping maski są częścią silnika (łatka `krita/patches/0004`), jak w Photoshopie. Przełącznik Krity „Inherit Alpha” (w panelu: „Clipping Mask”) to clipping mask: warstwa jest przycięta do najbliższej nieprzyciętej warstwy pod nią w tej samej grupie. Baza i przycięte warstwy są składane osobno (przycięta warstwa korekcyjna zmienia tylko bazę), a tryb mieszania bazy działa na cały stos („Blend Clipped Layers as Group”).
+- Bez ukrytych grup „(clip)”: warstwy można przesuwać, grupować, scalać i duplikować bez rozpadania stosów, a panel warstw pokazuje je jak Photoshop (podkreślona baza, wcięcie ze strzałką). Grupy „(clip)” ze starszych dokumentów są przy pierwszym otwarciu rozbierane: warstwy wracają na miejsce grupy, baza dostaje tryb mieszania, krycie i widoczność grupy (wynik wygląda tak samo). Grupa z własną maską przy bazie, która też ma maskę, zostaje (dalej wyświetla się poprawnie).
+- Clip / Release to jeden krok Cofnij (polecenie Krity). Release na przyciętej warstwie zwalnia ją i przycięte warstwy nad nią, jak w PS. Można przyciąć także warstwę bazową (dołącza do stosu pod nią). Przycięta grupa przestaje być Pass Through.
+- Nawyki z Photoshopa: nowa warstwa w środku stosu albo utworzona przy zaznaczonej przyciętej warstwie jest przycinana; warstwa przeciągnięta do stosu jest przycinana, przycięta przeciągnięta poza stos — zwalniana; cały stos przesunięty razem zostaje bez zmian. Ctrl+G na warstwie ze stosu grupuje cały stos. Grupy ze stosami mogą być Pass Through.
+- Clipping na dole grupy (nie ma do czego przyciąć) rysuje warstwę normalnie, jak w PS.
+- PSD (łatka `0005`): eksport zapisuje flagę clipping i Blend If (blending ranges), maska Blend If nie jest już eksportowana jako maska warstwy; import odczytuje clipping i Blend If z plików Photoshopa.
+- Wydajność: wtyczka nie przegląda już drzewa warstw co 300 ms — clipping reaguje na zmiany zgłaszane przez panel warstw (plus kontrola co ok. 3 s), odświeżanie panelu warstw jest wstrzymywane podczas malowania i grupowane przy zmianach miniatur, auto-odświeżanie w Krita PS prawie nic nie robi, test zajętości obrazu (blokada obrazu) nie jest wykonywany bez potrzeby.
+
+Ograniczenia: warstwa przycięta do grupy Pass Through (i grupa Pass Through jako przycięta warstwa) korzysta ze starego zachowania Krity „inherit alpha”. Blend If „Underlying Layer” na warstwie bazowej stosu widzi tylko stos, nie obraz pod nim. Rozbieranie grup „(clip)” to kilka kroków w historii Cofnij.
+
+Testy: python verification/test_clipping_native.py (18 testów, atrapa API Krity).
+
 ## Dokumenty ze starszej wersji
 
 Przy pierwszym otwarciu dokumentu wtyczka zamienia „Layer Mask” (lub ukryty magazyn) na maskę przezroczystości z tą samą zawartością, przywraca pełną wbudowaną maskę warstwy i przelicza Blend If. Po zapisaniu taki dokument nie będzie poprawnie obsługiwany przez starszą wersję wtyczki — przed pierwszym użyciem zrób kopię ważnych plików .kra.
