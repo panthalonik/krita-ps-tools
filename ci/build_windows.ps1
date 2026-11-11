@@ -73,6 +73,10 @@ if (-not (Test-Path 'krita-deps-management\tools\setup-env.py')) {
 if (-not (Test-Path 'krita-deps-management\ci-utilities\run-ci-build.py')) {
     git clone -q --depth 1 https://invent.kde.org/packaging/krita-ci-utilities.git krita-deps-management\ci-utilities
 }
+# CMake's FindPython picks the system python3.exe (a venv has no python3.exe),
+# and Krita's FindSIP imports sipbuild with it: sipbuild needs these modules.
+# Without them Krita is built WITHOUT Python scripting (no plugins at all).
+python -m pip install -q --upgrade packaging setuptools
 if (-not (Test-Path "$KB\venv\Scripts\python.exe")) { python -m venv "$KB\venv" --upgrade-deps }
 & "$KB\venv\Scripts\Activate.ps1"
 python -m pip install -q -r krita-deps-management\requirements.txt
@@ -97,10 +101,12 @@ python -u krita-deps-management\tools\replace-branch-in-seed-file.py krita-deps-
 python -u krita-deps-management\tools\generate-deps-file.py -s branch-corrected-deps.yml -o .kde-ci.yml
 python -u krita-deps-management\ci-utilities\run-ci-build.py --project krita --branch master --platform Windows/Qt5/Shared --skip-publishing
 
-Step 'checking that the ps filters plugin was built'
-$dll = Get-ChildItem -Recurse "$Src\_install" -Filter 'kritapsfilters.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $dll) { throw 'kritapsfilters.dll is missing from the install folder' }
-Write-Host "found $($dll.FullName)"
+Step 'checking the build'
+foreach ($name in 'kritapsfilters.dll', 'kritapykrita.dll', 'kritarunner.exe') {
+    $f = Get-ChildItem -Recurse "$Src\_install" -Filter $name -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $f) { throw "$name is missing from the install folder (kritapykrita / kritarunner = Python scripting)" }
+    Write-Host "found $($f.FullName)"
+}
 
 Step 'package (portable zip)'
 Get-ChildItem $Src -Filter 'krita-x64-*.zip' | Remove-Item -ErrorAction SilentlyContinue
