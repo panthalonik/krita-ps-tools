@@ -8,14 +8,15 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Install
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libegl1 libxkbcommon0 >/dev/null
+          # system libraries for Qt's offscreen platform; usually preinstalled,
+          # so a temporary mirror problem must not fail the tests
+          (sudo apt-get update -qq && sudo apt-get install -y -qq libegl1 libxkbcommon0 >/dev/null) || echo "apt skipped"
           pip install -q numpy PyQt5
       - name: Python plugin tests
         env:
