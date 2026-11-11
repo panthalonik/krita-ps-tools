@@ -49,6 +49,8 @@ def filter_layer(k, doc, name, fid, props):
 def main(args):
     out_dir = args[0] if args else os.getcwd()
     os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "started.txt"), "w") as f:
+        f.write("ps_smoke started\n")
     res = {"checks": {}, "errors": []}
     try:
         from PyQt5.QtWidgets import QApplication

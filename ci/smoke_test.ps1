@@ -24,15 +24,21 @@ if (-not $runner) {
 if (-not $runner) { Write-Host 'kritarunner(.com) not found'; exit 1 }
 Write-Host "kritarunner: $($runner.FullName)"
 
-$env:PYTHONPATH = (Join-Path $Repo 'ci\smoke') + ';' + $env:PYTHONPATH
+# Krita sets up its own Python path (lib\krita-python-libs): put the script there
+$pyLibs = Get-ChildItem -Recurse (Split-Path -Parent $runner.DirectoryName) -Directory -Filter 'krita-python-libs' -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($pyLibs) {
+    Copy-Item (Join-Path $Repo 'ci\smoke\ps_smoke.py') $pyLibs.FullName -Force
+    Write-Host "ps_smoke.py copied to $($pyLibs.FullName)"
+}
 $log = Join-Path $out 'runner.log'
 $job = Start-Job -ScriptBlock {
     param($exe, $dir, $outDir, $logFile, $pp)
-    $env:PYTHONPATH = $pp
+    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+    Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
     Set-Location $dir
     & $exe -s ps_smoke -f main $outDir *> $logFile
     $LASTEXITCODE
-} -ArgumentList $runner.FullName, $runner.DirectoryName, $out, $log, $env:PYTHONPATH
+} -ArgumentList $runner.FullName, $runner.DirectoryName, $out, $log, ''
 if (-not (Wait-Job $job -Timeout 420)) {
     Write-Host 'kritarunner did not finish in 7 minutes'
     Stop-Job $job
