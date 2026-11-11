@@ -1,5 +1,6 @@
-# Runs ci/smoke/ps_smoke.py inside the freshly built Krita PS (kritarunner),
-# then checks the PSD it exported with ci/psd_inspect.py. Used by
+# Runs ci/smoke/ps_smoke.py inside the freshly built Krita PS (kritarunner,
+# from the portable package - the same files people download), then checks
+# the PSD it exported with ci/psd_inspect.py. Used by
 # .github/workflows/build-windows.yml after the build.
 $ErrorActionPreference = 'Continue'
 $Repo = Split-Path -Parent $PSScriptRoot
@@ -7,21 +8,40 @@ $KB   = if ($env:KB) { $env:KB } else { 'C:\kb' }
 $out  = Join-Path $KB 'out\smoke'
 New-Item -ItemType Directory -Force $out | Out-Null
 
-$runner = Get-ChildItem -Recurse (Join-Path $KB 'krita\_install') -Filter 'kritarunner.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $runner) { Write-Host 'kritarunner.exe not found'; exit 1 }
+# the portable package (made by the build step)
+$pkg = Get-ChildItem (Join-Path $KB 'out') -Filter 'krita-x64-*.zip' -ErrorAction SilentlyContinue |
+       Where-Object { $_.Name -notmatch '-dbg' } | Select-Object -First 1
+$root = Join-Path $KB 'smoke-krita'
+$runner = $null
+if ($pkg) {
+    if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+    7z x $pkg.FullName "-o$root" -y | Out-Null
+    $runner = Get-ChildItem -Recurse $root -Include 'kritarunner.com', 'kritarunner_com.com' -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+if (-not $runner) {
+    $runner = Get-ChildItem -Recurse (Join-Path $KB 'krita\_install') -Include 'kritarunner.com', 'kritarunner_com.com' -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+if (-not $runner) { Write-Host 'kritarunner(.com) not found'; exit 1 }
 Write-Host "kritarunner: $($runner.FullName)"
 
 $env:PYTHONPATH = (Join-Path $Repo 'ci\smoke') + ';' + $env:PYTHONPATH
-$env:PATH = $runner.DirectoryName + ';' + $env:PATH
-$p = Start-Process -FilePath $runner.FullName -ArgumentList @('-s', 'ps_smoke', '-f', 'main', $out) `
-        -WorkingDirectory $runner.DirectoryName -NoNewWindow -PassThru `
-        -RedirectStandardOutput (Join-Path $out 'runner.out') -RedirectStandardError (Join-Path $out 'runner.err')
-if (-not $p.WaitForExit(300000)) {
-    Write-Host 'kritarunner did not finish in 5 minutes'
-    $p.Kill()
+$log = Join-Path $out 'runner.log'
+$job = Start-Job -ScriptBlock {
+    param($exe, $dir, $outDir, $logFile, $pp)
+    $env:PYTHONPATH = $pp
+    Set-Location $dir
+    & $exe -s ps_smoke -f main $outDir *> $logFile
+    $LASTEXITCODE
+} -ArgumentList $runner.FullName, $runner.DirectoryName, $out, $log, $env:PYTHONPATH
+if (-not (Wait-Job $job -Timeout 420)) {
+    Write-Host 'kritarunner did not finish in 7 minutes'
+    Stop-Job $job
+    Get-Process kritarunner* -ErrorAction SilentlyContinue | Stop-Process -Force
 }
+$code = Receive-Job $job -ErrorAction SilentlyContinue
+Write-Host "kritarunner exit code: $code"
 Write-Host '--- kritarunner output (last lines)'
-Get-Content (Join-Path $out 'runner.out'), (Join-Path $out 'runner.err') -ErrorAction SilentlyContinue | Select-Object -Last 60
+Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 80
 Write-Host '--- smoke.json'
 Get-Content (Join-Path $out 'smoke.json') -ErrorAction SilentlyContinue
 
