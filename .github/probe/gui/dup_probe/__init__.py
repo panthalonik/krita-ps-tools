@@ -205,7 +205,8 @@ class Probe(object):
         win.qwindow().showMaximized()
         if os.environ.get("PROBE_OPEN"):
             yield from self.open_test(k, win)
-            return
+            if not os.environ.get("PROBE_SCENARIOS"):
+                return
         scenarios = os.environ.get("PROBE_SCENARIOS", "u8_plain,u16_plain,u8_layers10,u8_adjust,"
                                    "u8_group_blendif,u8_cameraraw,u8_layers10_adjust_group").split(",")
         if "pscameraraw" not in k.filters() and "u8_cameraraw" in scenarios:
@@ -307,7 +308,9 @@ class OpenMixin(object):
         base = os.path.dirname(OUT)
         kra, psd = os.path.join(base, "big.kra"), os.path.join(base, "big.psd")
         t = pc()
-        if os.environ.get("PROBE_OPEN") == "png":
+        modes = os.environ.get("PROBE_OPEN", "").split(",")
+        files = []
+        if "png" in modes:
             from krita import InfoObject
             rgb8 = os.path.join(base, "photo8.png")
             d = k.createDocument(N, N, "photo", "RGBA", "U8", "", 300.0)
@@ -324,10 +327,10 @@ class OpenMixin(object):
                 k.setBatchmode(False)
             d.setModified(False)
             d.close()
-            files = (("png_rgb8", rgb8), ("png_grey16", os.environ["PROBE_PNG"]), ("png_rgb8_again", rgb8))
-        else:
+            files += [("png_rgb8", rgb8), ("png_grey16", os.environ["PROBE_PNG"]), ("png_rgb8_again", rgb8)]
+        if "big" in modes:
             big_document(k, kra, psd)
-            files = (("kra", kra), ("psd", psd), ("kra_again", kra))
+            files += [("kra", kra), ("psd", psd), ("kra_again", kra)]
         RES["make_files"] = round(pc() - t, 1)
         RES["file_mb"] = {p: round(os.path.getsize(p) / 1e6, 1) for _l, p in files if os.path.exists(p)}
         yield 3.0
