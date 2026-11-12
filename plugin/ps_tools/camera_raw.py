@@ -276,6 +276,22 @@ def _eye_icon(on, size=14):
     return QIcon(pm)
 
 
+def _dropper_icon(size=16):
+    """White balance tool (an eyedropper)."""
+    pm = QPixmap(size * 2, size * 2)
+    pm.setDevicePixelRatio(2.0)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(QPen(QColor(220, 220, 220), 1.4))
+    p.drawLine(QPointF(3, 13), QPointF(10, 6))
+    p.setBrush(QColor(220, 220, 220))
+    p.drawEllipse(QPointF(11.5, 4.5), 2.6, 2.6)
+    p.drawLine(QPointF(8, 4), QPointF(12, 8))
+    p.end()
+    return QIcon(pm)
+
+
 # ================================================================= widgets
 class Track(QWidget):
     """Camera Raw's slider: a thin line (with a gradient for colour
@@ -352,7 +368,7 @@ class CrSlider(QWidget):
         self.label.setFont(f)
         self.edit = QLineEdit()
         self.edit.setObjectName("acrValue")
-        self.edit.setFixedWidth(44)
+        self.edit.setFixedWidth(52)
         self.edit.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.edit.setFont(f)
         self.edit.editingFinished.connect(self._typed)
@@ -745,7 +761,8 @@ class CameraRawPanel(QWidget):
         self.wb_mode.addItem(u"Custom", "custom")
         wb.addWidget(self.wb_mode, 1)
         fg = QToolButton()
-        fg.setText(u"⌖")
+        fg.setIcon(_dropper_icon())
+        fg.setIconSize(QSize(16, 16))
         fg.setToolTip(u"White balance: the foreground colour (pick a colour that should be neutral "
                       u"grey with Krita's colour picker first)")
         fg.clicked.connect(self._wb_from_foreground)
