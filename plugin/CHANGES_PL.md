@@ -127,6 +127,12 @@ Testy: python verification/test_clipping_native.py (21 testów).
 - Wtyczka w starszym buildzie odświeża wtedy cały obraz sama (wolniej, ale działa).
 - Test w zbudowanej Kricie sprawdza dokładnie to: nowe ustawienia maski Camera Raw mają zmienić obraz bez ręcznego odświeżania.
 
+## Wersja en18 — szybszy Camera Raw Filter (m.in. duplikowanie warstwy)
+
+- Pomiar w prawdziwym oknie Krity (4096×4096, w pełni zamalowana warstwa): samo Duplicate Layer trwa ok. 0,06 s w Krita PS (oficjalna Krita trzyma obraz zajęty ok. 2,3 s przez opóźnione łączenie operacji). Wolne jest dopiero przeliczanie filtrów na nowej warstwie: kopia warstwy z maską Camera Raw przelicza cały filtr od nowa.
+- Jądro Camera Raw jest 1,7–2,5× szybsze, z identycznym wynikiem (różnice < 0,0001): sumy okienkowe idą wierszami (przyjazne dla pamięci podręcznej), filtr prowadzony liczy tylko potrzebne średnie, Color Noise Reduction liczy średnie przewodnika raz dla obu kanałów, Vibrance/Saturation nie liczy już sin/cos, a każdy kolejny krok liczy tylko obszar, którego potrzebują kroki po nim (wcześniej wszystkie kroki liczyły kafel z pełnym marginesem ~170 px).
+- Dotyczy też podglądu przy przesuwaniu suwaków.
+
 ## Dokumenty ze starszej wersji
 
 Przy pierwszym otwarciu dokumentu wtyczka zamienia „Layer Mask” (lub ukryty magazyn) na maskę przezroczystości z tą samą zawartością, przywraca pełną wbudowaną maskę warstwy i przelicza Blend If. Po zapisaniu taki dokument nie będzie poprawnie obsługiwany przez starszą wersję wtyczki — przed pierwszym użyciem zrób kopię ważnych plików .kra.

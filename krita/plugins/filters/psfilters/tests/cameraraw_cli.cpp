@@ -41,10 +41,12 @@ static void run(const Settings &s, const ToneLuts &tone, const std::vector<float
     }
     Frame fr;
     fr.x = 0; fr.y = 0; fr.width = W; fr.height = H; fr.lod = lod;
-    process(s, buf, fr, tone);
+    Target t;
+    t.x = x; t.y = y; t.width = w; t.height = h;
+    process(s, buf, fr, tone, t);
     for (int yy = y; yy < y + h; yy++) {
         for (int xx = x; xx < x + w; xx++) {
-            const size_t i = size_t(yy - by0) * buf.width + (xx - bx0);
+            const size_t i = size_t(yy - buf.y0) * buf.width + (xx - buf.x0);
             float *q = &out[(size_t(yy) * W + xx) * 4];
             q[0] = srgbEncode(std::max(0.0f, buf.r[i]));
             q[1] = srgbEncode(std::max(0.0f, buf.g[i]));

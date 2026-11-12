@@ -574,11 +574,18 @@ void KisFilterPsCameraRaw::processImpl(KisPaintDeviceSP device, const QRect &app
     ps::cr::ToneLuts tone;
     tone.build(s);
     if (progressUpdater) progressUpdater->setProgress(10);
-    ps::cr::process(s, buf, frame, tone);
+    // only applyRect comes back: each step computes just what the later
+    // steps still need (much less than area for the first, local ones)
+    ps::cr::Target target;
+    target.x = applyRect.x();
+    target.y = applyRect.y();
+    target.width = applyRect.width();
+    target.height = applyRect.height();
+    ps::cr::process(s, buf, frame, tone, target);
     if (progressUpdater) progressUpdater->setProgress(90);
 
     QVector<quint8> out;
-    pixels.write(buf, applyRect.x() - area.x(), applyRect.y() - area.y(), applyRect.width(),
+    pixels.write(buf, applyRect.x() - buf.x0, applyRect.y() - buf.y0, applyRect.width(),
                  applyRect.height(), out);
     device->writeBytes(out.constData(), applyRect);
     if (progressUpdater) progressUpdater->setProgress(100);

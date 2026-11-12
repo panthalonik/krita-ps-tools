@@ -352,7 +352,7 @@ inline float srgbEncode(float v)
 inline float luminance(float r, float g, float b) { return 0.2126f * r + 0.7152f * g + 0.0722f * b; }
 
 /// Cube root: a bit-level first guess and two Newton steps (relative error
-/// < 1e-6), several times faster than std::cbrt.
+/// < 2e-6), several times faster than std::cbrt.
 inline float cbrtf_(float x)
 {
     if (x == 0.0f || !std::isfinite(x)) return x;
@@ -362,7 +362,6 @@ inline float cbrtf_(float x)
     bits = bits / 3u + 709921077u;
     float y;
     std::memcpy(&y, &bits, 4);
-    y = y - (y * y * y - ax) / (3.0f * y * y);
     y = y - (y * y * y - ax) / (3.0f * y * y);
     y = y - (y * y * y - ax) / (3.0f * y * y);
     return x < 0 ? -y : y;
@@ -536,30 +535,55 @@ struct ToneLuts {
 
 // ----------------------------------------------------------- image planes
 /// Sums over a (2r+1)^2 window, cut at the edges of the buffer.
+/// Box sums over (2r+1)^2 windows clipped to the buffer. Sliding sums in
+/// double precision, both passes walk the memory row by row.
 inline void boxSum(const float *src, float *dst, int w, int h, int r, std::vector<float> &tmp)
 {
     tmp.resize(size_t(w) * h);
-    std::vector<double> run;
-    // horizontal
-    run.resize(size_t(w) + 1);
-    for (int y = 0; y < h; y++) {
-        const float *s = src + size_t(y) * w;
-        run[0] = 0;
-        for (int x = 0; x < w; x++) run[x + 1] = run[x] + s[x];
-        float *t = tmp.data() + size_t(y) * w;
-        for (int x = 0; x < w; x++) {
-            const int a = std::max(0, x - r), b = std::min(w - 1, x + r);
-            t[x] = float(run[b + 1] - run[a]);
+    // horizontal: four rows at a time (independent running sums keep the
+    // CPU busy instead of waiting for one long chain of additions)
+    auto row = [&](int y0, int rows) {
+        double acc[4] = {0, 0, 0, 0};
+        const float *s[4];
+        float *t[4];
+        for (int k = 0; k < rows; k++) {
+            s[k] = src + size_t(y0 + k) * w;
+            t[k] = tmp.data() + size_t(y0 + k) * w;
         }
+        const int first = std::min(w - 1, r);
+        for (int k = 0; k < rows; k++) {
+            for (int x = 0; x <= first; x++) acc[k] += s[k][x];
+        }
+        for (int x = 0; x < w; x++) {
+            const int add = x + r + 1, sub = x - r;
+            for (int k = 0; k < rows; k++) {
+                t[k][x] = float(acc[k]);
+                if (add < w) acc[k] += s[k][add];
+                if (sub >= 0) acc[k] -= s[k][sub];
+            }
+        }
+    };
+    int y = 0;
+    for (; y + 4 <= h; y += 4) row(y, 4);
+    if (y < h) row(y, h - y);
+    // vertical: one running sum per column
+    std::vector<double> col(size_t(w), 0.0);
+    const int first = std::min(h - 1, r);
+    for (int y = 0; y <= first; y++) {
+        const float *t = tmp.data() + size_t(y) * w;
+        for (int x = 0; x < w; x++) col[x] += t[x];
     }
-    // vertical
-    run.resize(size_t(h) + 1);
-    for (int x = 0; x < w; x++) {
-        run[0] = 0;
-        for (int y = 0; y < h; y++) run[y + 1] = run[y] + tmp[size_t(y) * w + x];
-        for (int y = 0; y < h; y++) {
-            const int a = std::max(0, y - r), b = std::min(h - 1, y + r);
-            dst[size_t(y) * w + x] = float(run[b + 1] - run[a]);
+    for (int y = 0; y < h; y++) {
+        float *d = dst + size_t(y) * w;
+        for (int x = 0; x < w; x++) d[x] = float(col[x]);
+        const int add = y + r + 1, sub = y - r;
+        if (add < h) {
+            const float *t = tmp.data() + size_t(add) * w;
+            for (int x = 0; x < w; x++) col[x] += t[x];
+        }
+        if (sub >= 0) {
+            const float *t = tmp.data() + size_t(sub) * w;
+            for (int x = 0; x < w; x++) col[x] -= t[x];
         }
     }
 }
@@ -568,10 +592,27 @@ inline void boxSum(const float *src, float *dst, int w, int h, int r, std::vecto
 /// the image - do not darken the edges): mean(x) = box(w x) / box(w).
 class Means {
 public:
-    Means(const std::vector<float> &weight, int w, int h) : m_w(weight), m_width(w), m_height(h) {}
+    Means(const std::vector<float> &weight, int w, int h) : m_w(weight), m_width(w), m_height(h)
+    {
+        m_opaque = true;
+        for (float v : weight) {
+            if (v != 1.0f) { m_opaque = false; break; }
+        }
+    }
 
     void mean(const float *src, float *dst, int r) {
         const size_t n = size_t(m_width) * m_height;
+        if (m_opaque) {
+            // every weight is 1: the denominator is the window's pixel count
+            boxSum(src, dst, m_width, m_height, r, m_tmp);
+            const std::vector<float> &inv = inverseCount(r);
+            for (int y = 0; y < m_height; y++) {
+                const float iy = inv[size_t(m_width) + y];
+                float *d = dst + size_t(y) * m_width;
+                for (int x = 0; x < m_width; x++) d[x] *= inv[x] * iy;
+            }
+            return;
+        }
         std::vector<float> &den = denominator(r);
         m_buf.resize(n);
         for (size_t i = 0; i < n; i++) m_buf[i] = src[i] * m_w[i];
@@ -591,28 +632,29 @@ public:
 
     /// Edge-aware smoothing (He et al. guided filter, the image guides itself).
     void guided(const float *I, float *q, int r, float eps) {
-        guided(I, I, q, r, eps);
+        const size_t n = size_t(m_width) * m_height;
+        std::vector<float> mI(n), mII(n), t(n);
+        mean(I, mI.data(), r);
+        for (size_t i = 0; i < n; i++) t[i] = I[i] * I[i];
+        mean(t.data(), mII.data(), r);
+        coefficients(I, q, mI, mI, mII, mII, t, r, eps);
     }
 
     /// Guided filter: smooths p, keeping the edges of the guide I.
     void guided(const float *I, const float *p, float *q, int r, float eps) {
         const size_t n = size_t(m_width) * m_height;
-        std::vector<float> mI(n), mp(n), mIp(n), mII(n), t(n), a(n), b(n);
-        mean(I, mI.data(), r);
-        mean(p, mp.data(), r);
-        for (size_t i = 0; i < n; i++) t[i] = I[i] * p[i];
-        mean(t.data(), mIp.data(), r);
-        for (size_t i = 0; i < n; i++) t[i] = I[i] * I[i];
-        mean(t.data(), mII.data(), r);
-        for (size_t i = 0; i < n; i++) {
-            const float var = std::max(0.0f, mII[i] - mI[i] * mI[i]);
-            const float cov = mIp[i] - mI[i] * mp[i];
-            a[i] = cov / (var + eps);
-            b[i] = mp[i] - a[i] * mI[i];
-        }
-        mean(a.data(), mI.data(), r);
-        mean(b.data(), mp.data(), r);
-        for (size_t i = 0; i < n; i++) q[i] = mI[i] * I[i] + mp[i];
+        std::vector<float> mI(n), mII(n), t(n);
+        guideMeans(I, mI, mII, t, r);
+        guidedWith(I, p, q, mI, mII, t, r, eps);
+    }
+
+    /// Two images smoothed with the same guide (the guide's means once).
+    void guided2(const float *I, const float *p1, float *q1, const float *p2, float *q2, int r, float eps) {
+        const size_t n = size_t(m_width) * m_height;
+        std::vector<float> mI(n), mII(n), t(n);
+        guideMeans(I, mI, mII, t, r);
+        guidedWith(I, p1, q1, mI, mII, t, r, eps);
+        guidedWith(I, p2, q2, mI, mII, t, r, eps);
     }
 
     /// Local minimum over a (2r+1)^2 window (transparent pixels ignored).
@@ -631,18 +673,73 @@ public:
                 t[size_t(y) * m_width + x] = v;
             }
         }
+        // vertical: row by row (cache friendly)
+        std::vector<float> row(static_cast<size_t>(m_width), big);
         for (int y = 0; y < m_height; y++) {
             const int a = std::max(0, y - r), b = std::min(m_height - 1, y + r);
+            std::fill(row.begin(), row.end(), big);
+            for (int k = a; k <= b; k++) {
+                const float *tk = t.data() + size_t(k) * m_width;
+                for (int x = 0; x < m_width; x++) row[x] = std::min(row[x], tk[x]);
+            }
             for (int x = 0; x < m_width; x++) {
-                float v = big;
-                for (int k = a; k <= b; k++) v = std::min(v, t[size_t(k) * m_width + x]);
                 const size_t i = size_t(y) * m_width + x;
-                dst[i] = v >= big ? src[i] : v;
+                dst[i] = row[x] >= big ? src[i] : row[x];
             }
         }
     }
 
 private:
+    void guideMeans(const float *I, std::vector<float> &mI, std::vector<float> &mII, std::vector<float> &t, int r) {
+        const size_t n = size_t(m_width) * m_height;
+        mean(I, mI.data(), r);
+        for (size_t i = 0; i < n; i++) t[i] = I[i] * I[i];
+        mean(t.data(), mII.data(), r);
+    }
+
+    void guidedWith(const float *I, const float *p, float *q, const std::vector<float> &mI,
+                    const std::vector<float> &mII, std::vector<float> &t, int r, float eps) {
+        const size_t n = size_t(m_width) * m_height;
+        std::vector<float> mp(n), mIp(n);
+        mean(p, mp.data(), r);
+        for (size_t i = 0; i < n; i++) t[i] = I[i] * p[i];
+        mean(t.data(), mIp.data(), r);
+        coefficients(I, q, mI, mp, mIp, mII, t, r, eps);
+    }
+
+    /// a = cov(I, p) / (var(I) + eps), b = mean(p) - a mean(I); q = mean(a) I + mean(b)
+    void coefficients(const float *I, float *q, const std::vector<float> &mI, const std::vector<float> &mp,
+                      const std::vector<float> &mIp, const std::vector<float> &mII, std::vector<float> &t,
+                      int r, float eps) {
+        const size_t n = size_t(m_width) * m_height;
+        std::vector<float> a(n), b(n);
+        for (size_t i = 0; i < n; i++) {
+            const float var = std::max(0.0f, mII[i] - mI[i] * mI[i]);
+            const float cov = mIp[i] - mI[i] * mp[i];
+            a[i] = cov / (var + eps);
+            b[i] = mp[i] - a[i] * mI[i];
+        }
+        mean(a.data(), t.data(), r);
+        mean(b.data(), a.data(), r);
+        for (size_t i = 0; i < n; i++) q[i] = t[i] * I[i] + a[i];
+    }
+
+    /// 1 / window size along x (first width entries) and along y (next height)
+    const std::vector<float> &inverseCount(int r) {
+        for (auto &d : m_inv) {
+            if (d.first == r) return d.second;
+        }
+        m_inv.push_back(std::make_pair(r, std::vector<float>(size_t(m_width) + m_height)));
+        std::vector<float> &v = m_inv.back().second;
+        for (int x = 0; x < m_width; x++) {
+            v[x] = 1.0f / float(std::min(m_width - 1, x + r) - std::max(0, x - r) + 1);
+        }
+        for (int y = 0; y < m_height; y++) {
+            v[size_t(m_width) + y] = 1.0f / float(std::min(m_height - 1, y + r) - std::max(0, y - r) + 1);
+        }
+        return v;
+    }
+
     std::vector<float> &denominator(int r) {
         for (auto &d : m_den) {
             if (d.first == r) return d.second;
@@ -655,7 +752,8 @@ private:
 
     const std::vector<float> &m_w;
     int m_width, m_height;
-    std::vector<std::pair<int, std::vector<float>>> m_den;
+    bool m_opaque = false;
+    std::vector<std::pair<int, std::vector<float>>> m_den, m_inv;
     std::vector<float> m_buf, m_tmp;
 };
 
@@ -702,6 +800,38 @@ struct Frame {
     int x = 0, y = 0, width = 1, height = 1;   // the image, at this level of detail
     int lod = 0;
 };
+
+/// The part of the buffer the caller wants back (absolute coordinates).
+struct Target {
+    int x = 0, y = 0, width = 0, height = 0;
+    bool valid() const { return width > 0 && height > 0; }
+};
+
+/// Shrinks the buffer to the target grown by margin (never beyond what the
+/// buffer has): the next steps only compute what is still needed.
+inline void crop(Buffer &buf, const Target &t, int margin)
+{
+    if (!t.valid()) return;
+    const int x0 = std::max(buf.x0, t.x - margin), y0 = std::max(buf.y0, t.y - margin);
+    const int x1 = std::min(buf.x0 + buf.width, t.x + t.width + margin);
+    const int y1 = std::min(buf.y0 + buf.height, t.y + t.height + margin);
+    if (x1 <= x0 || y1 <= y0) return;
+    if (x0 == buf.x0 && y0 == buf.y0 && x1 - x0 == buf.width && y1 - y0 == buf.height) return;
+    const int w = x1 - x0, h = y1 - y0;
+    auto cut = [&](std::vector<float> &v) {
+        std::vector<float> o(size_t(w) * h);
+        for (int y = 0; y < h; y++) {
+            const float *src = v.data() + size_t(y0 - buf.y0 + y) * buf.width + (x0 - buf.x0);
+            std::copy(src, src + w, o.data() + size_t(y) * w);
+        }
+        v.swap(o);
+    };
+    cut(buf.r); cut(buf.g); cut(buf.b); cut(buf.a);
+    buf.x0 = x0;
+    buf.y0 = y0;
+    buf.width = w;
+    buf.height = h;
+}
 
 namespace detail {
 
@@ -820,8 +950,7 @@ inline void noiseReduction(const Settings &s, const Radii &rad, std::vector<floa
         const float keep = clampf(s.nrColorDetail / 100.0f, 0, 1);
         const float e = 0.01f + 0.08f * (1.0f - keep);
         std::vector<float> sa(n);
-        means.guided(L.data(), A.data(), sa.data(), rad.nrColor, e * e);
-        means.guided(L.data(), B.data(), sm.data(), rad.nrColor, e * e);
+        means.guided2(L.data(), A.data(), sa.data(), B.data(), sm.data(), rad.nrColor, e * e);
         for (size_t i = 0; i < n; i++) {
             A[i] += (sa[i] - A[i]) * amount;
             B[i] += (sm[i] - B[i]) * amount;
@@ -892,7 +1021,8 @@ inline void color(const Settings &s, float &L, float &A, float &B)
         h = std::atan2(B, A) * (180.0f / kPi);
         if (h < 0) h += 360.0f;
     }
-    bool changed = false;
+    bool changed = false, hueMoved = false;
+    const float C0 = C;
 
     // Color Mixer: weights of the two nearest colours (they add up to 1)
     if (mixerOn && C > 1e-4f) {
@@ -904,6 +1034,7 @@ inline void color(const Settings &s, float &L, float &A, float &B)
         const float lumShift = (w0 * s.mixLum[i0] + w1 * s.mixLum[i1]) / 100.0f;
         const float chroma = clampf(C / 0.12f, 0, 1);       // greys are not touched
         h += hueShift * 30.0f * chroma;
+        hueMoved = hueMoved || hueShift != 0;
         C *= std::max(0.0f, 1.0f + satShift * (satShift > 0 ? 0.9f : 1.0f));
         L += lumShift * 0.22f * chroma * (lumShift > 0 ? (1.0f - L) : L) * 1.6f;
         changed = true;
@@ -922,10 +1053,15 @@ inline void color(const Settings &s, float &L, float &A, float &B)
         C *= std::max(0.0f, 1.0f + v * (v > 0 ? 1.4f : 0.9f) * low * low * skin);
         changed = true;
     }
-    if (changed) {
+    if (changed && hueMoved) {
         const float hr = h * (kPi / 180.0f);
         A = C * std::cos(hr);
         B = C * std::sin(hr);
+    } else if (changed) {
+        // same hue: only the chroma changed
+        const float k = C0 > 0 ? C / C0 : 0.0f;
+        A *= k;
+        B *= k;
     }
     grade(s, L, A, B);
 }
@@ -1025,24 +1161,41 @@ inline void vignette(const Settings &s, Buffer &buf, const Frame &fr, size_t i, 
 
 /// Applies the settings to the buffer (in place). The area at least
 /// border(settings, lod) pixels away from the buffer's edges is exact.
-inline void process(const Settings &s, Buffer &buf, const Frame &fr, const ToneLuts &tone)
+///
+/// With a valid target only that part is needed: every step works on the
+/// target grown by what the steps after it still need, and the buffer comes
+/// back cropped to the target (buf.x0 / y0 / width / height tell where).
+inline void process(const Settings &s, Buffer &buf, const Frame &fr, const ToneLuts &tone,
+                    const Target &target = Target())
 {
     const int lod = fr.lod;
     const Radii rad = radii(s, lod);
-    const size_t n = size_t(buf.width) * buf.height;
-    if (!n) return;
+    if (!buf.width || !buf.height) return;
 
-    std::vector<float> weight(n);
-    for (size_t i = 0; i < n; i++) weight[i] = clampf(buf.a[i], 0.0f, 1.0f);
-    Means means(weight, buf.width, buf.height);
+    // what the steps after each one still need around the target
+    const int needSharpen = rad.sharpen;
+    const int needTone = needSharpen + 2 * rad.toneGuide + 2 * rad.clarityGuide + rad.texture;
+    const int needDehaze = needTone + rad.dehazeMin + 2 * rad.dehazeGuide;
+
+    std::vector<float> weight;
+    auto opacity = [&]() -> std::vector<float> & {
+        const size_t n = size_t(buf.width) * buf.height;
+        weight.resize(n);
+        for (size_t i = 0; i < n; i++) weight[i] = clampf(buf.a[i], 0.0f, 1.0f);
+        return weight;
+    };
 
     // ---- noise reduction (first, on the input)
     if (s.nrLum > 0 || s.nrColor > 0) {
+        const size_t n = size_t(buf.width) * buf.height;
+        Means means(opacity(), buf.width, buf.height);
         std::vector<float> L(n), A(n), B(n);
         for (size_t i = 0; i < n; i++) toOklab(buf.r[i], buf.g[i], buf.b[i], L[i], A[i], B[i]);
         detail::noiseReduction(s, rad, L, A, B, means);
         for (size_t i = 0; i < n; i++) fromOklab(L[i], A[i], B[i], buf.r[i], buf.g[i], buf.b[i]);
     }
+    crop(buf, target, needDehaze);
+    size_t n = size_t(buf.width) * buf.height;
 
     // ---- white balance, exposure (linear light)
     if (s.temperature != 0 || s.tint != 0 || s.exposure != 0) {
@@ -1061,13 +1214,21 @@ inline void process(const Settings &s, Buffer &buf, const Frame &fr, const ToneL
     }
 
     // ---- dehaze
-    if (s.dehaze != 0) detail::dehaze(s, rad, buf, means);
+    if (s.dehaze != 0) {
+        Means means(opacity(), buf.width, buf.height);
+        detail::dehaze(s, rad, buf, means);
+    }
+    crop(buf, target, needTone);
+    n = size_t(buf.width) * buf.height;
 
     // ---- highlights / shadows / clarity / texture (local, on lightness)
     if (s.highlights != 0 || s.shadows != 0 || s.clarity != 0 || s.texture != 0) {
+        Means means(opacity(), buf.width, buf.height);
         std::vector<float> Y(n);
         detail::toneLocal(s, rad, buf, means, Y);
     }
+    crop(buf, target, needSharpen);
+    n = size_t(buf.width) * buf.height;
 
     // ---- tone curve (contrast, whites, blacks, parametric and point curves)
     if (tone.active) {
@@ -1091,6 +1252,7 @@ inline void process(const Settings &s, Buffer &buf, const Frame &fr, const ToneL
         }
         if (sharpen) {
             std::vector<float> bl(n);
+            Means means(opacity(), buf.width, buf.height);
             means.blur(L.data(), bl.data(), rad.sharpenBlur);
             const float amount = clampf(s.sharpAmount / 100.0f, 0, 1.5f) * 1.25f;
             const float det = clampf(s.sharpDetail / 100.0f, 0, 1);
@@ -1142,6 +1304,8 @@ inline void process(const Settings &s, Buffer &buf, const Frame &fr, const ToneL
         }
         for (size_t i = 0; i < n; i++) fromOklab(L[i], A[i], B[i], buf.r[i], buf.g[i], buf.b[i]);
     }
+
+    crop(buf, target, 0);
 
     // ---- vignette (post-crop: the whole image)
     if (s.vigAmount != 0) {
