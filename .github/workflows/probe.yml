@@ -1,0 +1,69 @@
+# Diagnostics only (no build, no release): runs .github/probe/*.py inside the
+# latest Krita PS release and inside the official Krita, to compare them.
+name: Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/probe/**'
+      - '.github/workflows/probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [ps, stock]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get Krita
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force C:\probe | Out-Null
+          if ('${{ matrix.flavor }}' -eq 'ps') {
+            $tag = gh release list -L 20 --json tagName,isPrerelease -q '[.[] | select(.isPrerelease | not)][0].tagName'
+            Write-Host "release: $tag"
+            gh release download $tag -p 'Krita-PS-*.zip' -D C:\probe
+          } else {
+            foreach ($v in '5.3.4', '5.3.3') {
+              curl.exe -L --fail --retry 3 -o C:\probe\krita.zip "https://download.kde.org/stable/krita/$v/krita-x64-$v.zip"
+              if ($LASTEXITCODE -eq 0) { Write-Host "official Krita $v"; break }
+            }
+          }
+          $zip = Get-ChildItem C:\probe -Filter *.zip | Select-Object -First 1
+          7z x $zip.FullName -oC:\probe\k -y | Out-Null
+      - name: Run probe
+        shell: pwsh
+        run: |
+          $runner = Get-ChildItem -Recurse C:\probe\k -Include 'kritarunner.com', 'kritarunner_com.com' | Select-Object -First 1
+          Write-Host "kritarunner: $($runner.FullName)"
+          $pyLibs = Get-ChildItem -Recurse (Split-Path -Parent $runner.DirectoryName) -Directory -Filter 'krita-python-libs' | Select-Object -First 1
+          Copy-Item .github\probe\*.py $pyLibs.FullName -Force
+          $out = 'C:\probe\out'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $log = Join-Path $out 'runner.log'
+          $job = Start-Job -ScriptBlock {
+              param($exe, $dir, $outDir, $logFile)
+              Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+              Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+              Set-Location $dir
+              & $exe -s dup_probe -f main $outDir *> $logFile
+          } -ArgumentList $runner.FullName, $runner.DirectoryName, $out, $log
+          if (-not (Wait-Job $job -Timeout 1500)) {
+              Write-Host 'probe did not finish'
+              Stop-Job $job
+              Get-Process kritarunner* -ErrorAction SilentlyContinue | Stop-Process -Force
+          }
+          Write-Host '--- runner log'
+          Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 60
+          Write-Host '--- probe.json'
+          Get-Content (Join-Path $out 'probe.json') -ErrorAction SilentlyContinue
