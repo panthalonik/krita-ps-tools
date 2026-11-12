@@ -91,6 +91,12 @@ Testy: python verification/test_clipping_native.py (21 testów).
 - Teraz, jak w Photoshopie, każda operacja na warstwach to osobny krok Cofnij i od razu pojawia się w historii.
 - Ctrl+Z / Ctrl+Shift+Z wciśnięte, gdy Krita jeszcze kończy operację albo przelicza obraz, nie jest już ignorowane: Krita czeka na koniec pracy (zwykle ułamek sekundy) i cofa dokładnie ostatni krok. Podczas malowania pędzlem i niezakończonych transformacji zostaje zachowanie Krity.
 
+## Wersja en13 — grupy „Pass Through” jak w Photoshopie (łatka `0008`)
+
+- Błąd: po zgrupowaniu warstw (bez tła) warstwa z Blend If znikała, a warstwy korekcyjne w grupie przestawały działać na warstwy pod grupą. Przyczyna: grupa w Kricie jest domyślnie izolowana — jej zawartość składa się na pustym płótnie, więc Blend If „widzi” pod sobą przezroczystość, a korekcje nie sięgają poza grupę.
+- Teraz nowa grupa (Ctrl+G i przycisk nowej grupy) jest „Pass Through”, tak jak w Photoshopie: Blend If, clipping i warstwy korekcyjne w grupie działają tak samo jak bez niej. Quick Clipping Group zostaje izolowana. Grupy zrobione wcześniej można przełączyć ikoną Pass Through w panelu warstw.
+- Wtyczka przełącza też na Pass Through nową grupę z warstwą z Blend If (wcześniej tylko z warstwami korekcyjnymi).
+
 ## Dokumenty ze starszej wersji
 
 Przy pierwszym otwarciu dokumentu wtyczka zamienia „Layer Mask” (lub ukryty magazyn) na maskę przezroczystości z tą samą zawartością, przywraca pełną wbudowaną maskę warstwy i przelicza Blend If. Po zapisaniu taki dokument nie będzie poprawnie obsługiwany przez starszą wersję wtyczki — przed pierwszym użyciem zrób kopię ważnych plików .kra.

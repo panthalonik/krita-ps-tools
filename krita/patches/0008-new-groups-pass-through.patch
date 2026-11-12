@@ -1,0 +1,64 @@
+diff --git a/libs/ui/kis_layer_manager.cc b/libs/ui/kis_layer_manager.cc
+index 0db2d7b..078e686 100644
+--- a/libs/ui/kis_layer_manager.cc
++++ b/libs/ui/kis_layer_manager.cc
+@@ -697,6 +697,8 @@ KisNodeSP KisLayerManager::addGroupLayer(KisNodeSP activeNode)
+ {
+     KisImageWSP image = m_view->image();
+     KisGroupLayerSP group = new KisGroupLayer(image.data(), image->nextLayerName( i18nc("A group of layers", "Group") ), OPACITY_OPAQUE_U8);
++    // ps_tools: a new group is "Pass Through", like in Photoshop
++    group->setPassThroughMode(true);
+     addLayerCommon(activeNode, group, false, 0);
+     return group;
+ }
+diff --git a/libs/ui/kis_node_manager.cpp b/libs/ui/kis_node_manager.cpp
+index c004ee4..95db187 100644
+--- a/libs/ui/kis_node_manager.cpp
++++ b/libs/ui/kis_node_manager.cpp
+@@ -1637,7 +1637,8 @@ void KisNodeManager::pasteLayersFromClipboard(bool changeOffset, QPointF offset,
+ bool KisNodeManager::createQuickGroupImpl(KisNodeJugglerCompressed *juggler,
+                                           const QString &overrideGroupName,
+                                           KisNodeSP *newGroup,
+-                                          KisNodeSP *newLastChild)
++                                          KisNodeSP *newLastChild,
++                                          bool passThrough)
+ {
+     KisNodeSP active = activeNode();
+     if (!active) return false;
+@@ -1647,6 +1648,7 @@ bool KisNodeManager::createQuickGroupImpl(KisNodeJugglerCompressed *juggler,
+     KisImageSP image = m_d->view->image();
+     QString groupName = !overrideGroupName.isEmpty() ? overrideGroupName : image->nextLayerName(i18nc("A group of layers", "Group"));
+     KisGroupLayerSP group = new KisGroupLayer(image.data(), groupName, OPACITY_OPAQUE_U8);
++    group->setPassThroughMode(passThrough);
+ 
+     KisNodeList nodes1;
+     nodes1 << group;
+@@ -1681,7 +1683,13 @@ void KisNodeManager::createQuickGroup()
+     KisNodeSP parent;
+     KisNodeSP above;
+ 
+-    createQuickGroupImpl(juggler, "", &parent, &above);
++    /**
++     * ps_tools: Ctrl+G makes a "Pass Through" group, like Photoshop, so the
++     * grouped adjustment layers keep working on everything below the group
++     * and Blend If keeps seeing the image below it. (Quick Clipping Group
++     * stays isolated: its clipping needs the group's own canvas.)
++     */
++    createQuickGroupImpl(juggler, "", &parent, &above, true);
+     juggler->end();
+ }
+ 
+diff --git a/libs/ui/kis_node_manager.h b/libs/ui/kis_node_manager.h
+index 9269217..a2fe8b6 100644
+--- a/libs/ui/kis_node_manager.h
++++ b/libs/ui/kis_node_manager.h
+@@ -284,7 +284,8 @@ private:
+     bool createQuickGroupImpl(KisNodeJugglerCompressed *juggler,
+                               const QString &overrideGroupName,
+                               KisNodeSP *newGroup,
+-                              KisNodeSP *newLastChild);
++                              KisNodeSP *newLastChild,
++                              bool passThrough = false);
+     void selectLayersImpl(const KoProperties &props, const KoProperties &invertedProps);
+ 
+     struct Private;

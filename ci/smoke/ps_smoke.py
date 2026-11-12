@@ -121,6 +121,8 @@ def main(args):
                             and c["clip_inside_base_blue"][:3] == [0, 0, 255]
                             and c["clip_outside_base_bg"][:3] == [40, 40, 40])
 
+        res["ok_groups"] = groups_check(k, res)
+
         doc.setBatchmode(True)
         res["export_psd"] = bool(doc.exportImage(os.path.join(out_dir, "smoke.psd"), InfoObject()))
         res["save_kra"] = bool(doc.saveAs(os.path.join(out_dir, "smoke.kra")))
@@ -157,6 +159,67 @@ def main(args):
     with open(os.path.join(out_dir, "smoke.json"), "w") as f:
         json.dump(res, f, indent=1)
     log(json.dumps(res))
+
+
+def groups_check(k, res):
+    """Photoshop "Pass Through" groups: Blend If, clipping and adjustment
+    layers inside a pass-through group work as without the group."""
+    doc = k.createDocument(W, H, "groups", "RGBA", "U8", "", 72.0)
+    root = doc.rootNode()
+    bg = doc.createNode("Background", "paintlayer")
+    root.addChildNode(bg, None)
+    data = bytearray(W * H * 4)
+    for y in range(H):
+        for x in range(W):
+            v = 40 if x < W // 2 else 220
+            data[(y * W + x) * 4:(y * W + x) * 4 + 4] = bytes((v, v, v, 255))
+    bg.setPixelData(bytes(data), 0, 0, W, H)
+
+    def group(name, above):
+        g = doc.createGroupLayer(name)
+        root.addChildNode(g, above)
+        g.setPassThroughMode(True)
+        return g
+
+    g1 = group("Group Blend If", bg)
+    bi = doc.createNode("BlendIf red", "paintlayer")
+    g1.addChildNode(bi, None)
+    solid(bi, 255, 0, 0, rect=(0, 0, W, H // 4))
+    bi.addChildNode(doc.createTransparencyMask("Blend If (Gray | 0/0 255/255 | 128/128 255/255)"), None)
+
+    g2 = group("Group clipping", g1)
+    base = doc.createNode("Base square", "paintlayer")
+    g2.addChildNode(base, None)
+    solid(base, 0, 255, 0, rect=(24, 24, 40, 40))
+    clipped = doc.createNode("Clipped blue", "paintlayer")
+    g2.addChildNode(clipped, base)
+    solid(clipped, 0, 0, 255, rect=(0, 20, W, 44))
+    clipped.setInheritAlpha(True)
+
+    g3 = group("Group adjustment", g2)
+    f = k.filter("invert")
+    sel = Selection()
+    sel.select(0, 48, W, H - 48, 255)
+    inv = doc.createFilterLayer("Invert", f, sel)
+    g3.addChildNode(inv, None)
+
+    doc.refreshProjection()
+    doc.waitForDone()
+    c = res["checks"]
+    c["group_blendif_dark_below_hidden"] = pixel(doc, 5, 5)       # 40
+    c["group_blendif_bright_below_red"] = pixel(doc, W - 5, 5)    # red
+    c["group_clip_inside_base_blue"] = pixel(doc, 32, 32)         # blue
+    c["group_clip_outside_base_bg"] = pixel(doc, 10, 32)          # 40
+    c["group_invert_below_dark"] = pixel(doc, 5, 56)              # 215
+    c["group_invert_below_bright"] = pixel(doc, W - 5, 56)        # 35
+    ok = (c["group_blendif_dark_below_hidden"][:3] == [40, 40, 40]
+          and c["group_blendif_bright_below_red"][:3] == [255, 0, 0]
+          and c["group_clip_inside_base_blue"][:3] == [0, 0, 255]
+          and c["group_clip_outside_base_bg"][:3] == [40, 40, 40]
+          and c["group_invert_below_dark"][:3] == [215, 215, 215]
+          and c["group_invert_below_bright"][:3] == [35, 35, 35])
+    doc.close()
+    return ok
 
 
 def benchmark(k, w=3000, h=2000, stacks=6):

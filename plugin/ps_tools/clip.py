@@ -453,6 +453,8 @@ def wants_pass_through(group, baked_keys=()):
             return False
         if c.type() == "filterlayer" or _key(c) in baked_keys:
             found = True
+        elif core.find_blendif_mask(c) is not None:
+            found = True                    # Blend If needs the image below
     return found
 
 
