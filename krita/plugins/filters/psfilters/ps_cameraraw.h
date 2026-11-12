@@ -49,6 +49,7 @@ struct Settings {
     // ---- Color
     float temperature = 0, tint = 0;     // -100 .. 100 (non-raw images)
     float vibrance = 0, saturation = 0;  // -100 .. 100
+    float bw = 0;                        // 1: Black & White treatment (Color Mixer = B&W Mix)
     // Color Mixer (HSL), colours: red orange yellow green aqua blue purple magenta
     float mixHue[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     float mixSat[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -86,7 +87,7 @@ struct Settings {
                hasCurve(curveGreen) || hasCurve(curveBlue);
     }
     bool colorActive() const {
-        if (vibrance != 0 || saturation != 0) return true;
+        if (vibrance != 0 || saturation != 0 || bw != 0) return true;
         for (int i = 0; i < 8; i++) {
             if (mixHue[i] != 0 || mixSat[i] != 0 || mixLum[i] != 0) return true;
         }
@@ -110,7 +111,7 @@ inline const char *const *settingNames(int &count)
     static const char *const names[] = {
         "exposure", "contrast", "highlights", "shadows", "whites", "blacks",
         "pc_highlights", "pc_lights", "pc_darks", "pc_shadows", "pc_split1", "pc_split2", "pc_split3",
-        "temperature", "tint", "vibrance", "saturation",
+        "temperature", "tint", "vibrance", "saturation", "bw",
         "mix_hue_red", "mix_hue_orange", "mix_hue_yellow", "mix_hue_green", "mix_hue_aqua", "mix_hue_blue",
         "mix_hue_purple", "mix_hue_magenta",
         "mix_sat_red", "mix_sat_orange", "mix_sat_yellow", "mix_sat_green", "mix_sat_aqua", "mix_sat_blue",
@@ -151,7 +152,7 @@ inline bool setValue(Settings &s, const std::string &k, float v)
         {"pc_darks", &Settings::pcDarks}, {"pc_shadows", &Settings::pcShadows},
         {"pc_split1", &Settings::pcSplit1}, {"pc_split2", &Settings::pcSplit2}, {"pc_split3", &Settings::pcSplit3},
         {"temperature", &Settings::temperature}, {"tint", &Settings::tint},
-        {"vibrance", &Settings::vibrance}, {"saturation", &Settings::saturation},
+        {"vibrance", &Settings::vibrance}, {"saturation", &Settings::saturation}, {"bw", &Settings::bw},
         {"cg_blending", &Settings::cgBlending}, {"cg_balance", &Settings::cgBalance},
         {"texture", &Settings::texture}, {"clarity", &Settings::clarity}, {"dehaze", &Settings::dehaze},
         {"vig_amount", &Settings::vigAmount}, {"vig_midpoint", &Settings::vigMidpoint},
@@ -828,9 +829,53 @@ inline void noiseReduction(const Settings &s, const Radii &rad, std::vector<floa
     }
 }
 
+/// The two Color Mixer colours a hue falls between and their weights.
+inline void mixerWeights(float h, int &i0, int &i1, float &w0, float &w1)
+{
+    const float *hs = mixerHues();
+    i0 = 7;
+    i1 = 0;
+    for (int i = 0; i < 8; i++) {
+        const int j = (i + 1) % 8;
+        const float a = hs[i], b = j ? hs[j] : hs[j] + 360.0f;
+        float hh = h;
+        if (i == 7 && hh < hs[0]) hh += 360.0f;
+        if (hh >= a && hh < b) { i0 = i; i1 = j; break; }
+    }
+    const float a = hs[i0], b = i1 ? hs[i1] : hs[i1] + 360.0f;
+    float hh = h;
+    if (i0 == 7 && hh < hs[0]) hh += 360.0f;
+    const float t = clampf((hh - a) / std::max(1e-3f, b - a), 0, 1);
+    w0 = 1 - t;
+    w1 = t;
+}
+
+inline void grade(const Settings &s, float &L, float &A, float &B);
+
 inline void color(const Settings &s, float &L, float &A, float &B)
 {
     float C = std::sqrt(A * A + B * B);
+    if (s.bw != 0) {
+        // Black & White: the B&W Mix (the mixer's luminance sliders) sets how
+        // light each colour turns; then the colour goes, toning (Color
+        // Grading) still applies
+        bool mix = false;
+        for (int i = 0; i < 8; i++) mix = mix || s.mixLum[i] != 0;
+        if (mix && C > 1e-4f) {
+            float h = std::atan2(B, A) * (180.0f / kPi);
+            if (h < 0) h += 360.0f;
+            int i0, i1;
+            float w0, w1;
+            mixerWeights(h, i0, i1, w0, w1);
+            const float lum = (w0 * s.mixLum[i0] + w1 * s.mixLum[i1]) / 100.0f;
+            const float chroma = clampf(C / 0.10f, 0, 1);
+            L += lum * 0.35f * chroma * (lum > 0 ? (1.0f - L) : L) * 1.6f;
+        }
+        A = 0;
+        B = 0;
+        grade(s, L, A, B);
+        return;
+    }
     bool mixerOn = false;
     for (int i = 0; i < 8 && !mixerOn; i++) {
         mixerOn = s.mixHue[i] != 0 || s.mixSat[i] != 0 || s.mixLum[i] != 0;
@@ -851,20 +896,9 @@ inline void color(const Settings &s, float &L, float &A, float &B)
 
     // Color Mixer: weights of the two nearest colours (they add up to 1)
     if (mixerOn && C > 1e-4f) {
-        const float *hs = mixerHues();
-        int i0 = 7, i1 = 0;
-        for (int i = 0; i < 8; i++) {
-            const int j = (i + 1) % 8;
-            const float a = hs[i], b = j ? hs[j] : hs[j] + 360.0f;
-            float hh = h;
-            if (i == 7 && hh < hs[0]) hh += 360.0f;
-            if (hh >= a && hh < b) { i0 = i; i1 = j; break; }
-        }
-        const float a = hs[i0], b = i1 ? hs[i1] : hs[i1] + 360.0f;
-        float hh = h;
-        if (i0 == 7 && hh < hs[0]) hh += 360.0f;
-        const float t = clampf((hh - a) / std::max(1e-3f, b - a), 0, 1);
-        const float w0 = 1 - t, w1 = t;
+        int i0, i1;
+        float w0, w1;
+        mixerWeights(h, i0, i1, w0, w1);
         const float hueShift = (w0 * s.mixHue[i0] + w1 * s.mixHue[i1]) / 100.0f;
         const float satShift = (w0 * s.mixSat[i0] + w1 * s.mixSat[i1]) / 100.0f;
         const float lumShift = (w0 * s.mixLum[i0] + w1 * s.mixLum[i1]) / 100.0f;
@@ -893,7 +927,12 @@ inline void color(const Settings &s, float &L, float &A, float &B)
         A = C * std::cos(hr);
         B = C * std::sin(hr);
     }
-    // Color Grading
+    grade(s, L, A, B);
+}
+
+/// Color Grading (split toning) by lightness zones.
+inline void grade(const Settings &s, float &L, float &A, float &B)
+{
     bool grading = false;
     for (int z = 0; z < 4; z++) {
         if (s.cgSat[z] != 0 || s.cgLum[z] != 0) grading = true;

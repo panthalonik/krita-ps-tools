@@ -846,7 +846,7 @@ class CameraRawEditor(Editor):
         self.panel.set_params(p)
 
     def params(self):
-        return self.panel.params()
+        return self.panel.effective_params()
 
 
 def json_copy(d):

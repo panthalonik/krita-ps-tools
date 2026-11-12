@@ -86,7 +86,7 @@ class Panel(unittest.TestCase):
         seen = []
         panel.changed.connect(lambda: seen.append(1))
         s = panel.sliders["clarity"]
-        s.slider.setValue(35)
+        s._moved(35)
         self.assertEqual(panel.params()["clarity"], 35)
         self.assertTrue(seen)
         from PyQt5.QtCore import QEvent
@@ -111,9 +111,36 @@ class Panel(unittest.TestCase):
         panel._reset_curve()
         self.assertEqual(panel.params()["curve_red"], CR.IDENTITY)
 
+    def test_eye_switches_a_panel_off(self):
+        panel = CR.CameraRawPanel()
+        panel.sliders["clarity"]._moved(40)
+        panel.sliders["exposure"]._moved(1.0)
+        panel.sections["effects"].eye.setChecked(False)
+        eff = panel.effective_params()
+        self.assertEqual(eff["clarity"], 0)
+        self.assertEqual(eff["exposure"], 1.0)
+        self.assertEqual(panel.params()["clarity"], 40)        # kept in the panel
+
+    def test_black_and_white(self):
+        panel = CR.CameraRawPanel()
+        panel.b_bw.setChecked(True)
+        self.assertEqual(panel.params()["bw"], 1)
+        self.assertEqual(panel.profile.currentIndex(), 1)
+        self.assertEqual(panel.sections["mixer"].title.text(), u"B&W Mix")
+        panel.profile.setCurrentIndex(0)
+        self.assertEqual(panel.params()["bw"], 0)
+
+    def test_typed_value(self):
+        panel = CR.CameraRawPanel()
+        s = panel.sliders["exposure"]
+        s.edit.setText("1,5")
+        s._typed()
+        self.assertEqual(panel.params()["exposure"], 1.5)
+        self.assertEqual(s.edit.text(), "+1.50")
+
     def test_white_balance_custom(self):
         panel = CR.CameraRawPanel()
-        panel.sliders["temperature"].slider.setValue(20)
+        panel.sliders["temperature"]._moved(20)
         self.assertEqual(panel.params()["wb_mode"], "custom")
         panel.wb_mode.setCurrentIndex(0)
         panel._wb_mode(0)

@@ -44,12 +44,54 @@ p = CR.defaults()
 p.update(exposure=0.35, highlights=-40, shadows=25, temperature=8, vibrance=15, cg_shadows_hue=210,
          cg_shadows_sat=35, clarity=20, sharp_amount=40)
 panel.set_params(p)
-for i, name in enumerate(("light", "color", "effects", "detail")):
-    panel.tabs.setCurrentIndex(i)
-    dump("cr_" + name, panel, 330, 900)
-panel.tabs.setCurrentIndex(0)
-panel.curve_mode.setCurrentIndex(1)
-dump("cr_curve", panel, 330, 900)
+dump("cr_panel", panel, 330, 900)
+for key in ("color", "effects", "curve", "mixer", "grading", "detail"):
+    for k2, sec in panel.sections.items():
+        sec.arrow.setChecked(k2 == key)
+    panel.setStyleSheet(CR.ACR_STYLE)
+    dump("cr_" + key, panel, 330, 900)
+
+# the whole Camera Raw window with a stand-in document
+from PyQt5.QtGui import QImage, QLinearGradient, QPainter, QRadialGradient  # noqa: E402
+from PyQt5.QtCore import QPointF, Qt  # noqa: E402
+
+
+class Doc(object):
+    def __init__(self):
+        self.img = QImage(1200, 1600, QImage.Format_ARGB32)
+        pt = QPainter(self.img)
+        g = QLinearGradient(0, 0, 1200, 1600)
+        g.setColorAt(0, QColor("#d9cbb8"))
+        g.setColorAt(1, QColor("#3a2414"))
+        pt.fillRect(self.img.rect(), g)
+        r = QRadialGradient(QPointF(600, 700), 420)
+        r.setColorAt(0, QColor("#c88a4a"))
+        r.setColorAt(1, QColor(80, 50, 30, 0))
+        pt.fillRect(self.img.rect(), r)
+        pt.end()
+
+    def width(self): return 1200
+    def height(self): return 1600
+    def thumbnail(self, w, h): return self.img.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    def projection(self, x, y, w, h): return self.img.copy(x, y, w, h)
+    def tryBarrierLock(self): return True
+    def unlock(self): pass
+
+
+class Node(object):
+    def name(self): return "IMG_cat.jpg"
+    def type(self): return "filtermask"
+    def setVisible(self, v): pass
+
+
+sess = CR.Session(Doc(), Node(), False)
+dlg = CR.CameraRawDialog(sess)
+dlg.panel.set_params(p)
+dlg.resize(1300, 860)
+dlg.show()
+app.processEvents()
+dlg._grab()
+dump("cr_dialog", dlg, 1300, 860)
 
 dock = QWidget()
 row = QHBoxLayout(dock)
