@@ -102,6 +102,20 @@ jobs:
           path: C:\kb\out\smoke
           if-no-files-found: ignore
 
+      # the package also stays on the run's page: downloadable even when
+      # publishing the release fails (e.g. the token may not create releases)
+      - name: Upload package
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: Krita-PS-build${{ github.run_number }}
+          path: |
+            C:\kb\out\krita-x64-*.zip
+            !C:\kb\out\*-dbg*.zip
+            C:\kb\out\ps_tools_plugin.zip
+          compression-level: 0
+          if-no-files-found: ignore
+
       - name: Publish release
         shell: pwsh
         env:
