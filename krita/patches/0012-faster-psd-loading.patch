@@ -1,0 +1,133 @@
+diff --git a/libs/psd/psd_pixel_utils.cpp b/libs/psd/psd_pixel_utils.cpp
+index b7a5cf8..515d6e0 100644
+--- a/libs/psd/psd_pixel_utils.cpp
++++ b/libs/psd/psd_pixel_utils.cpp
+@@ -11,6 +11,9 @@
+ #include <QMap>
+ #include <QtEndian>
+ #include <QtGlobal>
++#include <QVector>
++
++#include <cstring>
+ 
+ #include <KoColorSpace.h>
+ #include <KoColorSpaceMaths.h>
+@@ -333,13 +336,58 @@ QMap<quint16, QByteArray> fetchChannelsBytes(QIODevice &io, QVector<ChannelInfo
+ 
+ using PixelFunc = std::function<void(int, const QMap<quint16, QByteArray> &, int, quint8 *)>;
+ 
++/**
++ * ps_tools patch: fast path for the common RGB / Grayscale 8 and 16 bit
++ * layers. The generic path calls a std::function and looks every channel up
++ * in a QMap for every pixel, which made opening big PSD files take seconds;
++ * here a whole row is converted with plain pointers and written at once.
++ * The values are exactly the same (missing channels -> unit value).
++ */
++using FastRowFunc = void (*)(const QMap<quint16, QByteArray> &channelBytes,
++                             const QVector<quint16> &order, int srcOffset, int width, quint8 *dst);
++
++template<typename T, psd_byte_order byteOrder>
++void psFastRow(const QMap<quint16, QByteArray> &channelBytes, const QVector<quint16> &order, int srcOffset,
++               int width, quint8 *dst)
++{
++    const int n = order.size();
++    const T unit = KoColorSpaceMathsTraits<T>::unitValue;
++    T *out = reinterpret_cast<T *>(dst);
++    for (int c = 0; c < n; c++) {
++        const auto it = channelBytes.constFind(order[c]);
++        const uchar *src = nullptr;
++        int avail = 0;
++        if (it != channelBytes.constEnd()) {
++            src = reinterpret_cast<const uchar *>(it->constData());
++            avail = int(it->size() / int(sizeof(T))) - srcOffset;
++        }
++        const int count = src ? qBound(0, avail, width) : 0;
++        if (sizeof(T) == 2 && byteOrder == psd_byte_order::psdBigEndian) {
++            for (int x = 0; x < count; x++) {
++                out[x * n + c] = T(qFromBigEndian<quint16>(src + size_t(srcOffset + x) * 2));
++            }
++        } else {
++            for (int x = 0; x < count; x++) {
++                T v;
++                memcpy(&v, src + size_t(srcOffset + x) * sizeof(T), sizeof(T));
++                out[x * n + c] = v;
++            }
++        }
++        for (int x = count; x < width; x++) {
++            out[x * n + c] = unit;
++        }
++    }
++}
++
+ void readCommon(KisPaintDeviceSP dev,
+                 QIODevice &io,
+                 const QRect &layerRect,
+                 QVector<ChannelInfo *> infoRecords,
+                 int channelSize,
+                 PixelFunc pixelFunc,
+-                bool processMasks)
++                bool processMasks,
++                FastRowFunc fastRow = nullptr,
++                const QVector<quint16> &fastOrder = QVector<quint16>())
+ {
+     KisOffsetKeeper keeper(io);
+ 
+@@ -375,6 +423,16 @@ void readCommon(KisPaintDeviceSP dev,
+             channelBytes.insert(info->channelId, uncompressedBytes);
+         }
+ 
++        if (fastRow) {
++            const int w = layerRect.width();
++            QVector<quint8> row(w * int(dev->pixelSize()));
++            for (int y = 0; y < layerRect.height(); y++) {
++                fastRow(channelBytes, fastOrder, y * w, w, row.data());
++                dev->writeBytes(row.constData(), QRect(layerRect.left(), layerRect.top() + y, w, 1));
++            }
++            return;
++        }
++
+         KisSequentialIterator it(dev, layerRect);
+         int col = 0;
+         while (it.nextPixel()) {
+@@ -382,6 +440,15 @@ void readCommon(KisPaintDeviceSP dev,
+             col++;
+         }
+ 
++    } else if (fastRow) {
++        const int w = layerRect.width();
++        QVector<quint8> row(w * int(dev->pixelSize()));
++        for (int i = 0; i < layerRect.height(); i++) {
++            const QMap<quint16, QByteArray> channelBytes =
++                fetchChannelsBytes(io, infoRecords, i, w, channelSize, processMasks);
++            fastRow(channelBytes, fastOrder, 0, w, row.data());
++            dev->writeBytes(row.constData(), QRect(layerRect.left(), layerRect.top() + i, w, 1));
++        }
+     } else {
+         KisHLineIteratorSP it = dev->createHLineIteratorNG(layerRect.left(), layerRect.top(), layerRect.width());
+         for (int i = 0; i < layerRect.height(); i++) {
+@@ -411,12 +478,23 @@ void readChannelsImpl(QIODevice &io,
+                       const QRect &layerRect,
+                       QVector<ChannelInfo *> infoRecords)
+ {
++    // ps_tools patch: fast rows for 8 / 16 bit RGB and Grayscale (the pixel
++    // layout must be what the generic functions write: B G R A / Gray A)
++    FastRowFunc fast = nullptr;
++    if ((colorMode == RGB || colorMode == Grayscale) && (channelSize == 1 || channelSize == 2)
++        && int(device->pixelSize()) == channelSize * (colorMode == RGB ? 4 : 2)) {
++        fast = channelSize == 1 ? &psFastRow<quint8, byteOrder> : &psFastRow<quint16, byteOrder>;
++    }
++    const quint16 alphaId = quint16(-1);
++
+     switch (colorMode) {
+     case Grayscale:
+-        readCommon(device, io, layerRect, infoRecords, channelSize, &readGrayPixelCommon<byteOrder>, false);
++        readCommon(device, io, layerRect, infoRecords, channelSize, &readGrayPixelCommon<byteOrder>, false,
++                   fast, QVector<quint16>({0, alphaId}));
+         break;
+     case RGB:
+-        readCommon(device, io, layerRect, infoRecords, channelSize, &readRgbPixelCommon<byteOrder>, false);
++        readCommon(device, io, layerRect, infoRecords, channelSize, &readRgbPixelCommon<byteOrder>, false,
++                   fast, QVector<quint16>({2, 1, 0, alphaId}));
+         break;
+     case CMYK:
+         readCommon(device, io, layerRect, infoRecords, channelSize, &readCmykPixelCommon<byteOrder>, false);

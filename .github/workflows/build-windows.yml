@@ -116,7 +116,10 @@ jobs:
           compression-level: 0
           if-no-files-found: ignore
 
+      # a build whose smoke test failed is not published (it stays on the
+      # run's page as the artifact above)
       - name: Publish release
+        if: steps.smoke.outcome == 'success'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

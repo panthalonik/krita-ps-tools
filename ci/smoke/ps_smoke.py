@@ -138,6 +138,8 @@ def main(args):
         if "pscameraraw" in res["filters"]:
             res["ok_camera_raw"] = camera_raw_check(k, res)
 
+        res["ok_psd_pixels"] = psd_roundtrip_check(k, res, out_dir)
+
         doc.setBatchmode(True)
         res["export_psd"] = bool(doc.exportImage(os.path.join(out_dir, "smoke.psd"), InfoObject()))
         res["save_kra"] = bool(doc.saveAs(os.path.join(out_dir, "smoke.kra")))
@@ -416,6 +418,75 @@ def camera_raw_check(k, res):
         ok = ok and same and brighter and changed and grey and live
         doc.close()
     res["camera_raw"] = out
+    return ok
+
+
+def psd_roundtrip_check(k, res, out_dir):
+    """PSD export + import gives back exactly the same layer pixels (RGB /
+    Grayscale, 8 / 16 bit; patch 0012 reads those with a fast path), and how
+    long a bigger PSD takes to open."""
+    import random
+    import time
+    out = res["psd_pixels"] = {}
+    ok = True
+    for model, depth in (("RGBA", "U8"), ("RGBA", "U16"), ("GRAYA", "U8"), ("GRAYA", "U16")):
+        w, h = 203, 131
+        d = k.createDocument(w, h, "psd", model, depth, "", 72.0)
+        root = d.rootNode()
+        bpp = (4 if model == "RGBA" else 2) * (1 if depth == "U8" else 2)
+        rnd = random.Random(7)
+        datas = {}
+        for i, (x, y, lw, lh) in enumerate(((0, 0, w, h), (17, 9, 120, 77), (60, 40, 143, 91))):
+            n = d.createNode("L%d" % i, "paintlayer")
+            root.addChildNode(n, None)
+            data = bytearray(rnd.randbytes(lw * lh * bpp))
+            n.setPixelData(bytes(data), x, y, lw, lh)
+            datas[n.name()] = n
+        d.waitForDone()
+        want = {name: bytes(n.pixelData(0, 0, w, h)) for name, n in datas.items()}
+        path = os.path.join(out_dir, "rt_%s_%s.psd" % (model, depth))
+        d.setBatchmode(True)
+        d.exportImage(path, InfoObject())
+        d.setModified(False)
+        d.close()
+        b = k.openDocument(path)
+        same = {}
+        if b is None:
+            same["open"] = False
+        else:
+            b.waitForDone()
+            for n in b.rootNode().childNodes():
+                if n.name() in want:
+                    same[n.name()] = bytes(n.pixelData(0, 0, w, h)) == want[n.name()]
+            b.setModified(False)
+            b.close()
+        out["%s_%s" % (model, depth)] = same
+        ok = ok and len(same) == 3 and all(same.values())
+    # opening time of a 2048x2048 PSD with 4 full layers (informational)
+    try:
+        n2 = 2048
+        d = k.createDocument(n2, n2, "psdbig", "RGBA", "U8", "", 72.0)
+        rnd = random.Random(3)
+        for i in range(4):
+            n = d.createNode("B%d" % i, "paintlayer")
+            d.rootNode().addChildNode(n, None)
+            data = bytearray(rnd.randbytes(n2 * n2 * 4))
+            data[3::4] = b"\xff" * (n2 * n2)
+            n.setPixelData(bytes(data), 0, 0, n2, n2)
+        d.waitForDone()
+        path = os.path.join(out_dir, "big.psd")
+        d.setBatchmode(True)
+        d.exportImage(path, InfoObject())
+        d.setModified(False)
+        d.close()
+        t = time.perf_counter()
+        b = k.openDocument(path)
+        b.waitForDone()
+        out["open_2048_4_layers_s"] = round(time.perf_counter() - t, 2)
+        b.close()
+        os.remove(path)
+    except Exception:
+        res["errors"].append("psd timing: " + traceback.format_exc())
     return ok
 
 

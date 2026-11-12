@@ -133,6 +133,12 @@ Testy: python verification/test_clipping_native.py (21 testów).
 - Jądro Camera Raw jest 1,7–2,5× szybsze, z identycznym wynikiem (różnice < 0,0001): sumy okienkowe idą wierszami (przyjazne dla pamięci podręcznej), filtr prowadzony liczy tylko potrzebne średnie, Color Noise Reduction liczy średnie przewodnika raz dla obu kanałów, Vibrance/Saturation nie liczy już sin/cos, a każdy kolejny krok liczy tylko obszar, którego potrzebują kroki po nim (wcześniej wszystkie kroki liczyły kafel z pełnym marginesem ~170 px).
 - Dotyczy też podglądu przy przesuwaniu suwaków.
 
+## Wersja en19 — szybsze otwieranie PSD
+
+- Pomiar otwierania dużego dokumentu (4096×4096, 7 warstw): .kra ok. 1–1,4 s, .psd 4–6,5 s — i to całe 4–6 s okno Krity stoi. Wtyczka nie dokłada tu nic istotnego.
+- Przyczyna po stronie Krity: przy wczytywaniu PSD każdy piksel szedł przez wywołanie funkcji i wyszukiwanie każdego kanału w słowniku. Łatka 0012: warstwy RGB i Grayscale 8/16-bit są przepisywane całymi wierszami, z identycznym wynikiem.
+- Test w zbudowanej Kricie: PSD zapisany i otwarty ponownie ma bajt w bajt te same piksele (RGB/szarość, 8/16 bit, warstwy przesunięte), a wydanie nie jest publikowane, gdy test dymny nie przejdzie (paczka zostaje wtedy do pobrania przy przebiegu).
+
 ## Dokumenty ze starszej wersji
 
 Przy pierwszym otwarciu dokumentu wtyczka zamienia „Layer Mask” (lub ukryty magazyn) na maskę przezroczystości z tą samą zawartością, przywraca pełną wbudowaną maskę warstwy i przelicza Blend If. Po zapisaniu taki dokument nie będzie poprawnie obsługiwany przez starszą wersję wtyczki — przed pierwszym użyciem zrób kopię ważnych plików .kra.
