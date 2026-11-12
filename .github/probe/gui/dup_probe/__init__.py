@@ -54,6 +54,17 @@ CAMERA_RAW = {"exposure": 0.3, "contrast": 10, "highlights": -30, "shadows": 25,
 
 
 def build(k, scenario):
+    if scenario.startswith("png"):
+        doc = k.openDocument(os.environ["PROBE_PNG"])
+        doc.waitForDone()
+        if scenario.endswith("to_rgba16"):
+            doc.setColorSpace("RGBA", "U16", "sRGB-elle-V2-srgbtrc.icc")
+        elif scenario.endswith("to_rgba8"):
+            doc.setColorSpace("RGBA", "U8", "sRGB-elle-V2-srgbtrc.icc")
+        doc.waitForDone()
+        RES.setdefault("png_color", {})[scenario] = (doc.colorModel(), doc.colorDepth(), doc.colorProfile())
+        lay = [n for n in doc.rootNode().childNodes() if n.type() == "paintlayer"][-1]
+        return doc, lay
     depth = 16 if "u16" in scenario else 8
     doc = k.createDocument(N, N, scenario, "RGBA", "U16" if depth == 16 else "U8", "", 300.0)
     root = doc.rootNode()
@@ -171,7 +182,6 @@ class Probe(object):
             s = io.StringIO()
             pstats.Stats(prof, stream=s).sort_stats("cumulative").print_stats(30)
             r["python_profile"] = s.getvalue().splitlines()[:70]
-        r["idle_before_trigger"] = bool(w.get("pre_idle", True))
         RES["runs"].setdefault(label, []).append(r)
         save()
         for n in root.childNodes():
@@ -187,9 +197,9 @@ class Probe(object):
         RES["extensions"] = [type(e).__module__ for e in k.extensions()]
         win = k.activeWindow()
         win.qwindow().showMaximized()
-        scenarios = ["u8_plain", "u16_plain", "u8_layers10", "u8_adjust", "u8_group_blendif",
-                     "u8_cameraraw", "u8_layers10_adjust_group"]
-        if "pscameraraw" not in k.filters():
+        scenarios = os.environ.get("PROBE_SCENARIOS", "u8_plain,u16_plain,u8_layers10,u8_adjust,"
+                                   "u8_group_blendif,u8_cameraraw,u8_layers10_adjust_group").split(",")
+        if "pscameraraw" not in k.filters() and "u8_cameraraw" in scenarios:
             scenarios.remove("u8_cameraraw")
         for sc in scenarios:
             try:
@@ -204,8 +214,7 @@ class Probe(object):
                 for i in range(2):
                     yield from self.duplicate(sc, profile=(i == 0 and sc == "u8_plain"))
                 doc.setModified(False)
-                view.close()
-                doc.close()
+                doc.close()                  # closes its view too
                 yield 1.0
             except Exception:
                 RES["errors"].append(sc + ": " + traceback.format_exc())

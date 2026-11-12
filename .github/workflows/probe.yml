@@ -59,6 +59,9 @@ jobs:
           Set-Content (Join-Path $env:LOCALAPPDATA 'kritarc') "[python]`n$enable`n"
           $exe = Get-ChildItem -Recurse C:\probe\k -Filter 'krita.exe' | Select-Object -First 1
           $env:PROBE_OUT = 'C:\probe\gui.json'
+          python .github\probe\make_png.py C:\probe\depth16.png
+          $env:PROBE_PNG = 'C:\probe\depth16.png'
+          $env:PROBE_SCENARIOS = 'png_gray16,png_gray16_to_rgba16,png_gray16_to_rgba8,u8_plain,u16_plain'
           $p = Start-Process $exe.FullName -PassThru -RedirectStandardError C:\probe\krita.err -RedirectStandardOutput C:\probe\krita.out
           if (-not $p.WaitForExit(900000)) { Write-Host 'Krita did not quit'; $p | Stop-Process -Force }
           Write-Host '--- stderr (last lines)'
