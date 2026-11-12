@@ -47,7 +47,9 @@ K_PLUGIN_FACTORY_WITH_JSON(KritaPsFiltersFactory, "kritapsfilters.json", registe
 ///   5 = + clipping to Pass Through groups: a pass-through group that is a
 ///       clipping base or is clipped is drawn isolated, like in Photoshop
 ///       (0009); new groups are Pass Through (0008)
-static const int PS_TOOLS_ENGINE_LEVEL = 5;
+///   6 = + FilterMask.setFilter() from scripts redraws the image (0011), the
+///       Camera Raw Filter (pscameraraw)
+static const int PS_TOOLS_ENGINE_LEVEL = 6;
 
 KritaPsFilters::KritaPsFilters(QObject *parent, const QVariantList &)
     : QObject(parent)

@@ -146,13 +146,27 @@ def is_camera_raw(node):
         return False
 
 
-def apply_to_node(node, p):
+def needs_refresh(node):
+    """Krita PS < engine 6: a filter mask changed from a script is not
+    redrawn by itself (FilterMask.setFilter, patches/0011)."""
+    try:
+        return node.type() == "filtermask" and core.engine_level() < 6
+    except Exception:
+        return False
+
+
+def apply_to_node(node, p, doc=None):
     f = Krita.instance().filter(FILTER_ID)
     cfg = f.configuration()
     for k, v in build_props(p).items():
         cfg.setProperty(k, v)
     f.setConfiguration(cfg)
     node.setFilter(f)
+    if needs_refresh(node):
+        try:
+            (doc or Krita.instance().activeDocument()).refreshProjection()
+        except Exception:
+            pass
 
 
 # ------------------------------------------------------------- analysis
@@ -1205,14 +1219,16 @@ class Session(object):
 
     def apply(self, p):
         self.p = p
-        apply_to_node(self.node, p)
+        apply_to_node(self.node, p, self.doc)
 
     def cancel(self):
         try:
             if self.created:
                 self.node.remove()
+                if needs_refresh(self.node):
+                    self.doc.refreshProjection()
             else:
-                apply_to_node(self.node, self.original)
+                apply_to_node(self.node, self.original, self.doc)
         except Exception:
             pass
 
@@ -1570,7 +1586,7 @@ def open_filter():
     sel.select(0, 0, doc.width(), doc.height(), 255)
     mask = doc.createFilterMask(MASK_NAME, f, sel)
     node.addChildNode(mask, None)
-    apply_to_node(mask, defaults())
+    apply_to_node(mask, defaults(), doc)
     doc.setActiveNode(mask)
     return _show(Session(doc, mask, True))
 

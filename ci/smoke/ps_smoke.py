@@ -400,9 +400,20 @@ def camera_raw_check(k, res):
         doc.waitForDone()
         px = bytes(doc.pixelData(5, 5, 1, 1))
         grey = abs(px[0] - px[bpp]) <= 2 * bpp and abs(px[bpp] - px[2 * bpp]) <= 2 * bpp if bpp == 1 else True
+        # what the Camera Raw dialog does: new settings on the mask, and the
+        # image must change by itself (no refreshProjection, patches/0011)
+        masked = bytes(doc.pixelData(0, 0, W, H))
+        f = k.filter("pscameraraw")
+        cfg = f.configuration()
+        cfg.setProperty("saturation", 0.0)
+        cfg.setProperty("exposure", 1.0)
+        f.setConfiguration(cfg)
+        mask.setFilter(f)
+        doc.waitForDone()
+        live = bytes(doc.pixelData(0, 0, W, H)) != masked
         out[depth] = {"neutral_unchanged": same, "exposure_brighter": brighter,
-                      "all_settings_changed": changed, "mask_greyscale": grey}
-        ok = ok and same and brighter and changed and grey
+                      "all_settings_changed": changed, "mask_greyscale": grey, "mask_live_update": live}
+        ok = ok and same and brighter and changed and grey and live
         doc.close()
     res["camera_raw"] = out
     return ok

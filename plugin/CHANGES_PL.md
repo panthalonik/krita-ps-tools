@@ -121,6 +121,12 @@ Testy: python verification/test_clipping_native.py (21 testów).
 - **Panel „Color (PS)”** (Settings > Dockers): kwadraty koloru pierwszego planu i tła (pod nimi czarny/biały i zamiana), pole nasycenia/jasności i pasek odcienia. Kliknięcie aktywnego kwadratu otwiera **Color Picker** jak w Photoshopie: pole + pasek zależny od wybranego przycisku (H, S, B, R, G, B, L, a, b), new / current, pola H S B / R G B / L a b / C M Y K / #, Only Web Colors, Add to Swatches (próbki pod panelem: klik = kolor, Ctrl+klik = tło, Alt+klik = usuń). CMYK liczony prostym wzorem (bez profilu drukarskiego, więc liczby różnią się od Photoshopa).
 - Testy: jądro Camera Raw (kafelki dają ten sam wynik co cały obraz, każdy suwak w dobrą stronę, brak NaN), panele z prawdziwym PyQt5, pole/pasek Color Pickera w każdym trybie, test w zbudowanej Kricie (warstwa i maska, 8 i 16 bit).
 
+## Wersja en17 — poprawka: Camera Raw nie zmieniał obrazu
+
+- Przyczyna: Filter > Camera Raw Filter dodaje do warstwy maskę filtra, a Krita po zmianie ustawień maski ze skryptu (FilterMask.setFilter) nie przerysowywała obrazu — dla warstw filtra robiła to już łatka `0003`, dla masek nie. Łatka `0011`: maska przerysowuje się sama (na żywo, w tle). Poziom silnika 6.
+- Wtyczka w starszym buildzie odświeża wtedy cały obraz sama (wolniej, ale działa).
+- Test w zbudowanej Kricie sprawdza dokładnie to: nowe ustawienia maski Camera Raw mają zmienić obraz bez ręcznego odświeżania.
+
 ## Dokumenty ze starszej wersji
 
 Przy pierwszym otwarciu dokumentu wtyczka zamienia „Layer Mask” (lub ukryty magazyn) na maskę przezroczystości z tą samą zawartością, przywraca pełną wbudowaną maskę warstwy i przelicza Blend If. Po zapisaniu taki dokument nie będzie poprawnie obsługiwany przez starszą wersję wtyczki — przed pierwszym użyciem zrób kopię ważnych plików .kra.

@@ -617,7 +617,9 @@ def apply(doc, node, kind, params, do_refresh=True):
     # asynchronously - no blocking re-render of the whole image (scripted
     # opacity / blending mode changes still need one)
     if core.engine_level() >= 2 and not layer_changed:
-        do_refresh = False
+        # (a filter mask redraws by itself only from engine level 6)
+        if node.type() != "filtermask" or core.engine_level() >= 6:
+            do_refresh = False
     if kind in ("curves", "brightness_contrast", "exposure"):
         try:
             ok = int(node.filter().configuration().properties().get("nTransfers", 0)) > 0

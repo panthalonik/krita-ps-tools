@@ -1,0 +1,15 @@
+diff --git a/libs/libkis/FilterMask.cpp b/libs/libkis/FilterMask.cpp
+index 339ee46..8a83aae 100644
+--- a/libs/libkis/FilterMask.cpp
++++ b/libs/libkis/FilterMask.cpp
+@@ -41,6 +41,10 @@ void FilterMask::setFilter(Filter &filter)
+     KIS_SAFE_ASSERT_RECOVER_RETURN(mask);
+ 
+     mask->setFilter(filter.filterConfig()->cloneWithResourcesSnapshot());
++    // ps_tools patch: like FilterLayer::setFilter (patches/0003) - show the
++    // new settings right away (asynchronously), without a scripted
++    // Document.refreshProjection() of the whole image
++    mask->setDirty();
+ }
+ 
+ Filter * FilterMask::filter()
