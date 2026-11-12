@@ -1,0 +1,106 @@
+diff --git a/libs/image/kis_mask.cc b/libs/image/kis_mask.cc
+index 5ade2d8..2afe6a7 100644
+--- a/libs/image/kis_mask.cc
++++ b/libs/image/kis_mask.cc
+@@ -33,6 +33,7 @@
+ #include "kis_raster_keyframe_channel.h"
+ #include "KisSafeNodeProjectionStore.h"
+ #include "kis_ps_blend_if.h"
++#include "kis_group_layer.h"
+ 
+ 
+ struct Q_DECL_HIDDEN KisMask::Private {
+@@ -559,6 +560,10 @@ void KisMask::baseNodeChangedCallback()
+         const QString last = property("ps_tools_blend_if_state").toString();
+         if (state != last && (psBlendIf::hasPrefix(name) || psBlendIf::hasPrefix(last))) {
+             setProperty("ps_tools_blend_if_state", state);
++            // a group with Blend If is drawn isolated (kis_ps_clipping.h)
++            if (KisGroupLayer *group = qobject_cast<KisGroupLayer *>(parent().data())) {
++                group->updatePsClipping();
++            }
+             if (layer) {
+                 setDirty();
+             }
+diff --git a/libs/image/kis_ps_clipping.h b/libs/image/kis_ps_clipping.h
+index 90f773b..3523ce1 100644
+--- a/libs/image/kis_ps_clipping.h
++++ b/libs/image/kis_ps_clipping.h
+@@ -28,6 +28,7 @@
+ #include "kis_group_layer.h"
+ #include "kis_layer.h"
+ #include "kis_node.h"
++#include "kis_ps_blend_if.h"
+ 
+ namespace psClip {
+ 
+@@ -95,13 +96,16 @@ inline bool inStackOf(const KisNode *node, const KisNodeSP &base)
+ 
+ /**
+  * A group drawn isolated even in "Pass Through" mode, like in Photoshop:
+- * it is a clipping base (the layer right above it is clipped) or is
+- * clipped itself.
++ * it is a clipping base (the layer right above it is clipped), is clipped
++ * itself, or has Blend If (the group's content is faded against the image
++ * below it as one layer).
+  */
+ inline bool isolatesGroup(const KisNode *group)
+ {
+     if (!group || !group->parent()) return false;
+     if (clipFlag(group)) return true;
++    psBlendIf::Settings blendIf;
++    if (psBlendIf::findSettings(group, blendIf)) return true;
+     KisNodeSP up = layerAbove(group);
+     return up && clipFlag(up.data());
+ }
+@@ -136,6 +140,9 @@ inline void updateGroupsBelow(KisNode *node)
+ /// node `added` (after layers were added, removed or moved).
+ inline void updateGroupsIn(KisNode *parent, KisNode *added = nullptr)
+ {
++    if (KisGroupLayer *g = qobject_cast<KisGroupLayer *>(parent)) {
++        g->updatePsClipping();          // e.g. a Blend If mask added / removed
++    }
+     if (parent) {
+         for (KisNodeSP c = parent->firstChild(); c; c = c->nextSibling()) {
+             if (KisGroupLayer *g = qobject_cast<KisGroupLayer *>(c.data())) {
+diff --git a/libs/psd/psd_layer_section.cpp b/libs/psd/psd_layer_section.cpp
+index cc117d3..283ded0 100644
+--- a/libs/psd/psd_layer_section.cpp
++++ b/libs/psd/psd_layer_section.cpp
+@@ -1009,7 +1009,9 @@ void PSDLayerMaskSection::writePsdImpl(QIODevice &io, KisNodeSP rootLayer, psd_c
+                 layerRecord->isPassThrough = nodeIsPassThrough;
+                 layerRecord->opacity = nodeOpacity;
+                 layerRecord->clipping = nodeClipping;
+-                psBlendIfToRanges(node, layerRecord);
++                if (item.type != FlattenedNode::SECTION_DIVIDER) {   // a group's on its folder record
++                    psBlendIfToRanges(node, layerRecord);
++                }
+ 
+                 layerRecord->labelColor = nodeLabelColor;
+ 
+@@ -1189,7 +1191,9 @@ void PSDLayerMaskSection::writeTiffImpl(QIODevice &io, KisNodeSP rootLayer, psd_
+                 layerRecord->isPassThrough = nodeIsPassThrough;
+                 layerRecord->opacity = nodeOpacity;
+                 layerRecord->clipping = nodeClipping;
+-                psBlendIfToRanges(node, layerRecord);
++                if (item.type != FlattenedNode::SECTION_DIVIDER) {   // a group's on its folder record
++                    psBlendIfToRanges(node, layerRecord);
++                }
+ 
+                 layerRecord->transparencyProtected = alphaLocked;
+                 layerRecord->visible = nodeVisible;
+diff --git a/plugins/impex/psd/psd_loader.cpp b/plugins/impex/psd/psd_loader.cpp
+index 095b7cd..9aa33a2 100644
+--- a/plugins/impex/psd/psd_loader.cpp
++++ b/plugins/impex/psd/psd_loader.cpp
+@@ -649,7 +649,10 @@ KisImportExportErrorCode PSDLoader::decode(QIODevice &io)
+                     }
+                 }
+             }
+-            if (!channel.isEmpty()) {
++            // (a group: its section divider and folder records are both read;
++            // one Blend If mask is enough)
++            psBlendIf::Settings existing;
++            if (!channel.isEmpty() && !psBlendIf::findSettings(newLayer.data(), existing)) {
+                 auto text = [](const Range &r) {
+                     const int b0 = r.blackValues[0], b1 = qMax(b0, int(r.blackValues[1]));
+                     const int w0 = r.whiteValues[0], w1 = qMax(w0, int(r.whiteValues[1]));

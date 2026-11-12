@@ -86,8 +86,17 @@ def main(args):
         solid(clipped, 0, 0, 255, rect=(0, 20, W, 44))
         clipped.setInheritAlpha(True)
 
+        # a Pass Through group with Blend If on the group itself (for the PSD)
+        gbi = doc.createGroupLayer("Group BlendIf")
+        root.addChildNode(gbi, clipped)
+        gbi.setPassThroughMode(True)
+        gc = doc.createNode("Group content", "paintlayer")
+        gbi.addChildNode(gc, None)
+        solid(gc, 255, 0, 255, rect=(0, 48, W, H))
+        gbi.addChildNode(doc.createTransparencyMask("Blend If (Gray | 0/0 255/255 | 128/128 255/255)"), None)
+
         # adjustment layers (hidden, so they don't change the checks above)
-        above = clipped
+        above = gbi
         adj = [
             ("Levels", "levels", {"mode": "channels", "channel_0": "0.1;0.9;1.2;0;1"}),
             ("Curves", "perchannel", {"curve0": "0,0;0.5,0.7;1,1;"}),
@@ -116,10 +125,14 @@ def main(args):
         c["blendif_bright_below_red"] = pixel(doc, W - 5, 5)       # expect red
         c["clip_inside_base_blue"] = pixel(doc, 32, 32)            # expect blue
         c["clip_outside_base_bg"] = pixel(doc, 10, 32)             # expect background 40
+        c["group_bi_dark_below_hidden"] = pixel(doc, 5, 56)        # expect background 40
+        c["group_bi_bright_below_magenta"] = pixel(doc, W - 5, 56)  # expect magenta
         res["ok_render"] = (c["blendif_dark_below_hidden"][:3] == [40, 40, 40]
                             and c["blendif_bright_below_red"][:3] == [255, 0, 0]
                             and c["clip_inside_base_blue"][:3] == [0, 0, 255]
-                            and c["clip_outside_base_bg"][:3] == [40, 40, 40])
+                            and c["clip_outside_base_bg"][:3] == [40, 40, 40]
+                            and c["group_bi_dark_below_hidden"][:3] == [40, 40, 40]
+                            and c["group_bi_bright_below_magenta"][:3] == [255, 0, 255])
 
         res["ok_groups"] = groups_check(k, res)
 
@@ -148,7 +161,9 @@ def main(args):
             res["ok_import"] = (all(layers.get(n, {}).get("filter") == f for n, f in want.items())
                                 and layers.get("Clipped blue", {}).get("clip") is True
                                 and any(m.startswith("Blend If (")
-                                        for m in layers.get("BlendIf red", {}).get("masks", [])))
+                                        for m in layers.get("BlendIf red", {}).get("masks", []))
+                                and sum(m.startswith("Blend If (") for m in
+                                        layers.get("Group BlendIf", {}).get("masks", [])) == 1)
             back.close()
     except Exception:
         res["errors"].append(traceback.format_exc())
@@ -278,6 +293,31 @@ def clip_to_groups_check(k, res):
     c["clipgroup_reclipped_red"] = pixel(doc, 36, 32)
     ok &= c["clipgroup_reclipped_bg"][:3] == [220, 220, 220]
     ok &= c["clipgroup_reclipped_red"][:3] == [255, 0, 0]
+    g = doc.createGroupLayer("Group BlendIf")         # Blend If on a (nested) group
+    root.addChildNode(g, red)
+    g.setPassThroughMode(True)
+    gi = doc.createGroupLayer("Inner")
+    g.addChildNode(gi, None)
+    gi.setPassThroughMode(True)
+    mag = doc.createNode("Magenta", "paintlayer")
+    gi.addChildNode(mag, None)
+    solid(mag, 255, 0, 255, rect=(0, 48, W, H))
+    m = doc.createTransparencyMask("Blend If (Gray | 0/0 255/255 | 128/128 255/255)")
+    g.addChildNode(m, None)
+    doc.waitForDone()
+    c["groupbi_dark_below_hidden"] = pixel(doc, 5, 56)
+    c["groupbi_bright_below_magenta"] = pixel(doc, W - 5, 56)
+    ok &= c["groupbi_dark_below_hidden"][:3] == [40, 40, 40]
+    ok &= c["groupbi_bright_below_magenta"][:3] == [255, 0, 255]
+    m.setVisible(False)                          # Blend If off: magenta everywhere
+    doc.waitForDone()
+    c["groupbi_off_magenta"] = pixel(doc, 5, 56)
+    ok &= c["groupbi_off_magenta"][:3] == [255, 0, 255]
+    m.setVisible(True)
+    doc.waitForDone()
+    c["groupbi_on_again_bg"] = pixel(doc, 5, 56)
+    ok &= c["groupbi_on_again_bg"][:3] == [40, 40, 40]
+
     red.remove()                                 # base back to pass-through
     doc.waitForDone()
     c["clipgroup_removed_green"] = pixel(doc, 36, 32)

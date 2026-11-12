@@ -104,6 +104,12 @@ Testy: python verification/test_clipping_native.py (21 testów).
 - Wtyczka nie wyłącza już Pass Through przy przycinaniu grupy (to był dodatkowy krok w historii Cofnij).
 - Test automatyczny: clipping do grupy, do grupy w grupie, zwolnienie, ponowne przycięcie i usunięcie przyciętej warstwy.
 
+## Wersja en15 — Blend If na grupie (łatka `0010`)
+
+- Błąd: Blend If ustawiony na grupie (Pass Through) nie działał.
+- Teraz grupa z Blend If jest rysowana jako jedna warstwa (izolowana, jak grupa z clippingiem) i cała jej zawartość jest wygaszana względem obrazu pod grupą — także dla grup w grupach. Wyłączenie Blend If (ukrycie / usunięcie maski) przywraca Pass Through.
+- PSD: Blend If grupy jest zapisywany na rekordzie grupy (nie na zamykającym „</Layer group>”), a przy imporcie grupa dostaje jedną maskę Blend If.
+
 ## Dokumenty ze starszej wersji
 
 Przy pierwszym otwarciu dokumentu wtyczka zamienia „Layer Mask” (lub ukryty magazyn) na maskę przezroczystości z tą samą zawartością, przywraca pełną wbudowaną maskę warstwy i przelicza Blend If. Po zapisaniu taki dokument nie będzie poprawnie obsługiwany przez starszą wersję wtyczki — przed pierwszym użyciem zrób kopię ważnych plików .kra.

@@ -62,6 +62,15 @@ def check_smoke(layers):
     base = by.get("Base square")
     if base is not None and base[2] != 0:
         bad.append("base must not be clipped")
+    gb = by.get("Group BlendIf")
+    if gb is None:
+        bad.append("no 'Group BlendIf' group")
+    elif gb[4] < 16 or bytes.fromhex(gb[5])[4:8] != bytes((128, 128, 255, 255)):
+        bad.append("Blend If of a group not written: %d bytes %s" % (gb[4], gb[5]))
+    for l in layers:
+        if l[0] == "</Layer group>" and l[4] >= 8 and bytes.fromhex(l[5])[4:8] not in (
+                b"", bytes((0, 0, 255, 255))):
+            bad.append("Blend If written on a group's section divider: %s" % l[5])
     for name, key in EXPECT_ADJ.items():
         l = by.get(name)
         if l is None:
