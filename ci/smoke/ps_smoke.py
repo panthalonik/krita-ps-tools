@@ -565,8 +565,11 @@ def run_script(k, eng, flags, priority=None):
     """Fresh document, the script, the projection after every step."""
     eng.cmd("perf %d" % flags)
     eng.cmd("drop")
-    eng.cmd("reset_stats")
     doc, N = build_complex(k, eng)
+    # (building sets clipping while the first dabs are still being drawn: a
+    # state change in the middle of an update, which the cache detects and
+    # handles by dropping itself - counted from here on, only the script)
+    eng.cmd("reset_stats")
     if priority:
         eng.cmd("priority %d %d %d %d" % priority)
     shots = []
@@ -714,6 +717,14 @@ def paint_benchmark(k, w=3000, h=2000, layers=30):
         doc.refreshProjection()
         doc.waitForDone()
         res = {}
+        for name, node in (("mid", nodes[layers // 2 + 3]), ("top", nodes[-1])):
+            # a very big brush: every dab covers a large area painted before
+            uid = eng.uid(node)
+            t0 = time.perf_counter()
+            for i in range(20):
+                eng.cmd("dab %s %d %d 1400 1400 %d" % (uid, 500 + i * 9, 300 + i * 7, 5000 + i))
+                doc.waitForDone()
+            res["bigdab_ms_" + name] = round((time.perf_counter() - t0) * 1000.0 / 20, 1)
         for name, node in (("mid", nodes[layers // 2 + 3]), ("top", nodes[-1]), ("bottom", nodes[2])):
             uid = eng.uid(node)
             t0 = time.perf_counter()
