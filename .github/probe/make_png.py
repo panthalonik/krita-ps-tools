@@ -32,6 +32,7 @@ png += chunk(b"sRGB", b"\x03")
 png += chunk(b"gAMA", struct.pack(">I", 45455))
 png += chunk(b"cHRM", struct.pack(">8I", 31270, 32900, 64000, 33000, 30000, 60000, 15000, 6000))
 png += chunk(b"pHYs", struct.pack(">IIB", 2834, 2834, 1))
+png += chunk(b"tEXt", b"File\x00C:\\probe\\scene.blend")      # Blender: Krita asks nothing
 png += chunk(b"IDAT", zlib.compress(bytes(raw), 3))
 png += chunk(b"IEND", b"")
 open(sys.argv[1], "wb").write(png)

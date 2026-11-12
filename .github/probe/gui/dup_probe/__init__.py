@@ -55,7 +55,11 @@ CAMERA_RAW = {"exposure": 0.3, "contrast": 10, "highlights": -30, "shadows": 25,
 
 def build(k, scenario):
     if scenario.startswith("png"):
-        doc = k.openDocument(os.environ["PROBE_PNG"])
+        k.setBatchmode(True)                 # no import dialog, whatever the file
+        try:
+            doc = k.openDocument(os.environ["PROBE_PNG"])
+        finally:
+            k.setBatchmode(False)
         doc.waitForDone()
         if scenario.endswith("to_rgba16"):
             doc.setColorSpace("RGBA", "U16", "sRGB-elle-V2-srgbtrc.icc")
