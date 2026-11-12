@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        flavor: [ps-plugin, ps, stock]
+        flavor: [ps-plugin, stock]
     steps:
       - uses: actions/checkout@v4
       - name: Get Krita
@@ -61,7 +61,8 @@ jobs:
           $env:PROBE_OUT = 'C:\probe\gui.json'
           python .github\probe\make_png.py C:\probe\depth16.png
           $env:PROBE_PNG = 'C:\probe\depth16.png'
-          $env:PROBE_SCENARIOS = 'png_gray16,png_gray16_to_rgba16,png_gray16_to_rgba8,u8_plain,u16_plain'
+          $env:PROBE_SCENARIOS = 'png_gray16'
+          $env:PROBE_SWEEP = 'png_gray16'
           $p = Start-Process $exe.FullName -PassThru -RedirectStandardError C:\probe\krita.err -RedirectStandardOutput C:\probe\krita.out
           if (-not $p.WaitForExit(900000)) { Write-Host 'Krita did not quit'; $p | Stop-Process -Force }
           Write-Host '--- stderr (last lines)'

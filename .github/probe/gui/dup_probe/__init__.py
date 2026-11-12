@@ -199,6 +199,8 @@ class Probe(object):
         RES["version"] = k.version()
         RES["engine_level"] = QApplication.instance().property("ps_tools_engine")
         RES["extensions"] = [type(e).__module__ for e in k.extensions()]
+        RES["canvas"] = {key: k.readSetting("", key, "?") for key in
+                         ("canvasState", "OpenGLRenderer", "useOpenGL", "levelOfDetailEnabled")}
         win = k.activeWindow()
         win.qwindow().showMaximized()
         scenarios = os.environ.get("PROBE_SCENARIOS", "u8_plain,u16_plain,u8_layers10,u8_adjust,"
@@ -217,6 +219,28 @@ class Probe(object):
                 RES["dockers"] = [d.objectName() for d in win.dockers() if d.isVisible()]
                 for i in range(2):
                     yield from self.duplicate(sc, profile=(i == 0 and sc == "u8_plain"))
+                if sc == os.environ.get("PROBE_SWEEP"):
+                    # every docker Krita has, one at a time (the user's
+                    # workspace may show some that the default one hides)
+                    allD = list(win.dockers())
+                    was = [d.isVisible() for d in allD]
+                    for d in allD:
+                        d.hide()
+                    yield 1.0
+                    yield from self.duplicate("sweep_none")
+                    for d in allD:
+                        d.show()
+                        d.raise_()
+                        yield 1.5
+                        yield from self.duplicate("sweep_" + (d.objectName() or d.windowTitle()))
+                        d.hide()
+                        yield 0.5
+                    for d in allD:
+                        d.show()
+                    yield 2.0
+                    yield from self.duplicate("sweep_all")
+                    for d, v in zip(allD, was):
+                        d.setVisible(v)
                 doc.setModified(False)
                 doc.close()                  # closes its view too
                 yield 1.0
