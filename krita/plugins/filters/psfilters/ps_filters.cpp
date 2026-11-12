@@ -38,7 +38,10 @@ K_PLUGIN_FACTORY_WITH_JSON(KritaPsFiltersFactory, "kritapsfilters.json", registe
 ///       the base below, the stack is composited on its own (0004), and PSD
 ///       files keep clipping and Blend If (0005)
 ///   4 = + Shift + drag axis lock of the brush in C++ (ps_axis_lock.cpp)
-static const int PS_TOOLS_ENGINE_LEVEL = 4;
+///   5 = + clipping to Pass Through groups: a pass-through group that is a
+///       clipping base or is clipped is drawn isolated, like in Photoshop
+///       (0009); new groups are Pass Through (0008)
+static const int PS_TOOLS_ENGINE_LEVEL = 5;
 
 KritaPsFilters::KritaPsFilters(QObject *parent, const QVariantList &)
     : QObject(parent)

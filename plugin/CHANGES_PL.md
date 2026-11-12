@@ -73,7 +73,7 @@ Testy: python verification/test_native.py (14 testów, atrapa API Krity); testy 
 - PSD (łatka `0005`): eksport zapisuje flagę clipping i Blend If (blending ranges), maska Blend If nie jest już eksportowana jako maska warstwy; import odczytuje clipping i Blend If z plików Photoshopa.
 - Wydajność: wtyczka nie przegląda już drzewa warstw co 300 ms — clipping reaguje na zmiany zgłaszane przez panel warstw (plus kontrola co ok. 3 s), odświeżanie panelu warstw jest wstrzymywane podczas malowania i grupowane przy zmianach miniatur, auto-odświeżanie w Krita PS prawie nic nie robi, test zajętości obrazu (blokada obrazu) nie jest wykonywany bez potrzeby.
 
-Ograniczenia: warstwa przycięta do grupy Pass Through (i grupa Pass Through jako przycięta warstwa) korzysta ze starego zachowania Krity „inherit alpha”. Blend If „Underlying Layer” na warstwie bazowej stosu widzi tylko stos, nie obraz pod nim. Rozbieranie grup „(clip)” to kilka kroków w historii Cofnij.
+Ograniczenia: Blend If „Underlying Layer” na warstwie bazowej stosu widzi tylko stos, nie obraz pod nim. Rozbieranie grup „(clip)” to kilka kroków w historii Cofnij.
 
 Testy: python verification/test_clipping_native.py (18 testów, atrapa API Krity).
 
@@ -96,6 +96,13 @@ Testy: python verification/test_clipping_native.py (21 testów).
 - Błąd: po zgrupowaniu warstw (bez tła) warstwa z Blend If znikała, a warstwy korekcyjne w grupie przestawały działać na warstwy pod grupą. Przyczyna: grupa w Kricie jest domyślnie izolowana — jej zawartość składa się na pustym płótnie, więc Blend If „widzi” pod sobą przezroczystość, a korekcje nie sięgają poza grupę.
 - Teraz nowa grupa (Ctrl+G i przycisk nowej grupy) jest „Pass Through”, tak jak w Photoshopie: Blend If, clipping i warstwy korekcyjne w grupie działają tak samo jak bez niej. Quick Clipping Group zostaje izolowana. Grupy zrobione wcześniej można przełączyć ikoną Pass Through w panelu warstw.
 - Wtyczka przełącza też na Pass Through nową grupę z warstwą z Blend If (wcześniej tylko z warstwami korekcyjnymi).
+
+## Wersja en14 — clipping do grup (łatka `0009`)
+
+- Błąd: warstwa przycięta (clipping) nad grupą Pass Through rysowała po całym obrazie zamiast tylko po zawartości grupy.
+- Teraz, jak w Photoshopie: grupa Pass Through, do której coś jest przycięte (albo która sama jest przycięta), jest rysowana jako izolowana, a przycięte warstwy przycinają się do jej zawartości. Działa też dla grup w grupach (przycięcie do grupy wewnętrznej i zewnętrznej jednocześnie). Ustawienie Pass Through grupy zostaje bez zmian — po zwolnieniu clippingu grupa znowu działa jak Pass Through. Tak samo zachowuje się Photoshop: warstwy korekcyjne i Blend If w grupie, do której coś jest przycięte, działają tylko w obrębie grupy.
+- Wtyczka nie wyłącza już Pass Through przy przycinaniu grupy (to był dodatkowy krok w historii Cofnij).
+- Test automatyczny: clipping do grupy, do grupy w grupie, zwolnienie, ponowne przycięcie i usunięcie przyciętej warstwy.
 
 ## Dokumenty ze starszej wersji
 

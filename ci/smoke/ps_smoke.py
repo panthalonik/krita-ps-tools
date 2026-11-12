@@ -219,6 +219,71 @@ def groups_check(k, res):
           and c["group_invert_below_dark"][:3] == [215, 215, 215]
           and c["group_invert_below_bright"][:3] == [35, 35, 35])
     doc.close()
+    return ok and clip_to_groups_check(k, res)
+
+
+def clip_to_groups_check(k, res):
+    """Clipping to a (nested) Pass Through group, like Photoshop: the group
+    is drawn isolated and the clipped layer clips to its content. Also the
+    switch back and forth (no full refresh in between)."""
+    doc = k.createDocument(W, H, "clipgroups", "RGBA", "U8", "", 72.0)
+    root = doc.rootNode()
+    bg = doc.createNode("Background", "paintlayer")
+    root.addChildNode(bg, None)
+    data = bytearray(W * H * 4)
+    for y in range(H):
+        for x in range(W):
+            v = 40 if x < W // 2 else 220
+            data[(y * W + x) * 4:(y * W + x) * 4 + 4] = bytes((v, v, v, 255))
+    bg.setPixelData(bytes(data), 0, 0, W, H)
+
+    outer = doc.createGroupLayer("Outer")
+    root.addChildNode(outer, bg)
+    outer.setPassThroughMode(True)
+    inner = doc.createGroupLayer("Inner")
+    outer.addChildNode(inner, None)
+    inner.setPassThroughMode(True)
+    sq = doc.createNode("Square", "paintlayer")
+    inner.addChildNode(sq, None)
+    solid(sq, 0, 255, 0, rect=(24, 24, 40, 40))
+    blue = doc.createNode("Clip to inner", "paintlayer")
+    outer.addChildNode(blue, inner)
+    solid(blue, 0, 0, 255, rect=(0, 0, 32, H))
+    blue.setInheritAlpha(True)
+    red = doc.createNode("Clip to outer", "paintlayer")
+    root.addChildNode(red, outer)
+    solid(red, 255, 0, 0, rect=(32, 0, W, H))
+    red.setInheritAlpha(True)
+    doc.refreshProjection()
+    doc.waitForDone()
+
+    c = res["checks"]
+    pts = {"inner_clip_blue": (28, 32), "outer_clip_red": (36, 32),
+           "outside_right_bg": (50, 32), "outside_left_bg": (10, 10), "above_square_bg": (36, 10)}
+    want = {"inner_clip_blue": [0, 0, 255], "outer_clip_red": [255, 0, 0],
+            "outside_right_bg": [220, 220, 220], "outside_left_bg": [40, 40, 40],
+            "above_square_bg": [220, 220, 220]}
+    ok = True
+    for key, (x, y) in pts.items():
+        c["clipgroup_" + key] = pixel(doc, x, y)
+        ok &= c["clipgroup_" + key][:3] == want[key]
+
+    red.setInheritAlpha(False)                   # release: red over the right half
+    doc.waitForDone()
+    c["clipgroup_released_red"] = pixel(doc, 50, 32)
+    ok &= c["clipgroup_released_red"][:3] == [255, 0, 0]
+    red.setInheritAlpha(True)                    # clip again
+    doc.waitForDone()
+    c["clipgroup_reclipped_bg"] = pixel(doc, 50, 32)
+    c["clipgroup_reclipped_red"] = pixel(doc, 36, 32)
+    ok &= c["clipgroup_reclipped_bg"][:3] == [220, 220, 220]
+    ok &= c["clipgroup_reclipped_red"][:3] == [255, 0, 0]
+    red.remove()                                 # base back to pass-through
+    doc.waitForDone()
+    c["clipgroup_removed_green"] = pixel(doc, 36, 32)
+    ok &= c["clipgroup_removed_green"][:3] == [0, 255, 0]
+    res["ok_clip_to_groups"] = bool(ok)
+    doc.close()
     return ok
 
 

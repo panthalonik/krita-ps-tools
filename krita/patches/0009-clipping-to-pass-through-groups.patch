@@ -1,0 +1,304 @@
+diff --git a/libs/image/kis_async_merger.cpp b/libs/image/kis_async_merger.cpp
+index 78ab2ea..946d2c6 100644
+--- a/libs/image/kis_async_merger.cpp
++++ b/libs/image/kis_async_merger.cpp
+@@ -205,7 +205,7 @@ typedef QHash<const KisNode*, PassThroughScope> PassThroughScopes;
+ KisGroupLayer *passThroughGroup(KisNodeSP node)
+ {
+     KisGroupLayer *group = qobject_cast<KisGroupLayer*>(node.data());
+-    return group && group->passThroughMode() ? group : nullptr;
++    return group && group->effectivePassThroughMode() ? group : nullptr;
+ }
+ 
+ QList<KisEffectMaskSP> passThroughGroupMasks(const KisGroupLayer *group)
+diff --git a/libs/image/kis_group_layer.cc b/libs/image/kis_group_layer.cc
+index 6f498f2..d3c117f 100644
+--- a/libs/image/kis_group_layer.cc
++++ b/libs/image/kis_group_layer.cc
+@@ -27,6 +27,8 @@
+ #include "kis_layer_properties_icons.h"
+ #include <kis_projection_leaf.h>
+ #include <kis_abstract_projection_plane.h>
++#include "kis_ps_clipping.h"
++#include <atomic>
+ 
+ 
+ struct Q_DECL_HIDDEN KisGroupLayer::Private
+@@ -44,6 +46,7 @@ public:
+     qint32 x;
+     qint32 y;
+     bool passThroughMode;
++    std::atomic<bool> psIsolated {false};   // ps_tools: drawn isolated for clipping
+ 
+     std::tuple<KisPaintDeviceSP, bool> originalImpl() const;
+ };
+@@ -65,6 +68,7 @@ KisGroupLayer::KisGroupLayer(const KisGroupLayer &rhs) :
+     m_d->paintDevice->setDefaultPixel(const_cast<KisGroupLayer*>(&rhs)->m_d->paintDevice->defaultPixel());
+     m_d->paintDevice->setProjectionDevice(true);
+     m_d->passThroughMode = rhs.passThroughMode();
++    m_d->psIsolated = rhs.m_d->psIsolated.load();
+ }
+ 
+ KisGroupLayer::~KisGroupLayer()
+@@ -322,12 +326,40 @@ bool KisGroupLayer::passThroughMode() const
+     return m_d->passThroughMode;
+ }
+ 
++bool KisGroupLayer::effectivePassThroughMode() const
++{
++    return m_d->passThroughMode && !m_d->psIsolated;
++}
++
++void KisGroupLayer::updatePsClipping()
++{
++    const bool isolated = psClip::isolatesGroup(this);
++    if (m_d->psIsolated.exchange(isolated) == isolated) return;
++    if (!m_d->passThroughMode) return;          // an isolated group anyway
++
++    // (the projection is not reset when the group goes back to pass-through:
++    // it is simply not used, and this can run outside the image lock)
++    baseNodeChangedCallback();
++    baseNodeInvalidateAllFramesCallback();
++
++    /**
++     * isolated: the group's own projection is built from its children
++     * (it was not kept while the group was pass-through); pass-through:
++     * refreshGraphAsync() hands the refresh to the parent's level
++     */
++    KisImageSP image = this->image().toStrongRef();
++    if (image && parent()) {
++        image->refreshGraphAsync(this);
++    }
++}
++
+ void KisGroupLayer::setPassThroughMode(bool value)
+ {
+     if (m_d->passThroughMode == value) return;
+ 
+     m_d->passThroughMode = value;
+-    if (m_d->passThroughMode) {
++    m_d->psIsolated = psClip::isolatesGroup(this);
++    if (effectivePassThroughMode()) {
+         resetCache(colorSpace());
+     }
+     baseNodeChangedCallback();
+@@ -425,14 +457,14 @@ QRect collectRects(const KisNode *node, MetricPolicy policy)
+ 
+ QRect KisGroupLayer::extent() const
+ {
+-    return m_d->passThroughMode ?
++    return effectivePassThroughMode() ?
+         calculateChildrenLooseUserVisibleBounds() :
+         KisLayer::extent();
+ }
+ 
+ QRect KisGroupLayer::exactBounds() const
+ {
+-    return m_d->passThroughMode ?
++    return effectivePassThroughMode() ?
+         calculateChildrenTightUserVisibleBounds() :
+         KisLayer::exactBounds();
+ }
+diff --git a/libs/image/kis_group_layer.h b/libs/image/kis_group_layer.h
+index 8283e90..6b9ae43 100644
+--- a/libs/image/kis_group_layer.h
++++ b/libs/image/kis_group_layer.h
+@@ -97,6 +97,22 @@ public:
+     bool passThroughMode() const;
+     void setPassThroughMode(bool value);
+ 
++    /**
++     * ps_tools patch: "Pass Through" as it is rendered. Like in Photoshop, a
++     * pass-through group that is a clipping base (a clipped layer right
++     * above it) or is clipped itself is drawn as an isolated group, so the
++     * clipped layers clip to the group's content. passThroughMode() stays
++     * the user's setting (saved, shown in the Layers docker).
++     */
++    bool effectivePassThroughMode() const;
++
++    /**
++     * ps_tools patch: re-check the clipping around the group after a change
++     * (clipping switched, layers added / removed / moved) and re-render the
++     * group when it starts or stops being drawn isolated.
++     */
++    void updatePsClipping();
++
+     QRect extent() const override;
+     QRect exactBounds() const override;
+ 
+diff --git a/libs/image/kis_image.cc b/libs/image/kis_image.cc
+index 746da4e..0c8aeee 100644
+--- a/libs/image/kis_image.cc
++++ b/libs/image/kis_image.cc
+@@ -27,6 +27,7 @@
+ #include "KisProofingConfiguration.h"
+ 
+ #include "kis_adjustment_layer.h"
++#include "kis_ps_clipping.h"
+ #include "kis_annotation.h"
+ #include "kis_count_visitor.h"
+ #include "kis_filter_strategy.h"
+@@ -598,10 +599,21 @@ void KisImage::nodeHasBeenAdded(KisNode *parent, int index, KisNodeAdditionFlags
+        }
+     });
+ 
++    // ps_tools patch: groups that became / stopped being clipping bases
++    psClip::updateGroupsIn(parent, parent->at(index).data());
++
+     SANITY_CHECK_LOCKED("nodeHasBeenAdded");
+     m_d->signalRouter.emitNodeHasBeenAdded(parent, index, flags);
+ }
+ 
++void KisImage::nodeHasBeenRemoved(KisNode *parent, int index)
++{
++    KisNodeGraphListener::nodeHasBeenRemoved(parent, index);
++
++    // ps_tools patch: groups that stopped being clipping bases
++    psClip::updateGroupsIn(parent);
++}
++
+ void KisImage::aboutToRemoveANode(KisNode *parent, int index)
+ {
+     KisNodeSP deletedNode = parent->at(index);
+@@ -2231,7 +2243,7 @@ void KisImage::refreshGraphAsync(KisNodeSP root, const QVector<QRect> &rects, co
+     QVector<QRect> requestedRects = rects;
+ 
+     KisGroupLayer *group = dynamic_cast<KisGroupLayer*>(root.data());
+-    if (group && group->passThroughMode()) {
++    if (group && group->effectivePassThroughMode()) {
+         /**
+          * We cannot regenerate a pass-through group, since it is not present in
+          * the layers stack. Instead we should delegate this regeneration pass
+diff --git a/libs/image/kis_image.h b/libs/image/kis_image.h
+index 15e2d8e..c086a2e 100644
+--- a/libs/image/kis_image.h
++++ b/libs/image/kis_image.h
+@@ -76,6 +76,7 @@ public: // KisNodeGraphListener implementation
+ 
+     void aboutToAddANode(KisNode *parent, int index) override;
+     void nodeHasBeenAdded(KisNode *parent, int index, KisNodeAdditionFlags flags) override;
++    void nodeHasBeenRemoved(KisNode *parent, int index) override;
+     void aboutToRemoveANode(KisNode *parent, int index) override;
+     void nodeChanged(KisNode * node) override;
+     void nodeCollapsedChanged(KisNode *node) override;
+diff --git a/libs/image/kis_layer.cc b/libs/image/kis_layer.cc
+index e7dd90f..483c72d 100644
+--- a/libs/image/kis_layer.cc
++++ b/libs/image/kis_layer.cc
+@@ -7,6 +7,7 @@
+  */
+ 
+ #include "kis_layer.h"
++#include "kis_ps_clipping.h"
+ 
+ 
+ #include <klocalizedstring.h>
+@@ -358,6 +359,9 @@ void KisLayer::setChannelFlags(const QBitArray & channelFlags)
+ 
+     baseNodeChangedCallback();
+     baseNodeInvalidateAllFramesCallback();
++
++    // ps_tools patch: a group under (or being) a clipped layer is drawn isolated
++    psClip::updateGroupsAround(this);
+ }
+ 
+ QBitArray & KisLayer::channelFlags() const
+diff --git a/libs/image/kis_merge_walker.cc b/libs/image/kis_merge_walker.cc
+index 370e512..88999a1 100644
+--- a/libs/image/kis_merge_walker.cc
++++ b/libs/image/kis_merge_walker.cc
+@@ -74,7 +74,7 @@ void KisMergeWalker::startTripWithMask(KisProjectionLeafSP filthyMask, KisMergeW
+     {
+         KisNodeSP maskParent = filthyMask->node()->parent();
+         KisGroupLayer *group = qobject_cast<KisGroupLayer*>(maskParent.data());
+-        if (group && group->passThroughMode()) {
++        if (group && group->effectivePassThroughMode()) {
+             startTripImpl(maskParent->projectionLeaf(), flags);
+             return;
+         }
+diff --git a/libs/image/kis_projection_leaf.cpp b/libs/image/kis_projection_leaf.cpp
+index 7cb530f..15d5a57 100644
+--- a/libs/image/kis_projection_leaf.cpp
++++ b/libs/image/kis_projection_leaf.cpp
+@@ -33,7 +33,7 @@ struct Q_DECL_HIDDEN KisProjectionLeaf::Private
+ 
+     static bool checkPassThrough(const KisNode *node) {
+         const KisGroupLayer *group = qobject_cast<const KisGroupLayer*>(node);
+-        return group && group->passThroughMode();
++        return group && group->effectivePassThroughMode();   // ps_tools patch
+     }
+ 
+     static bool isSelectionMask(const KisNode *node) {
+diff --git a/libs/image/kis_ps_clipping.h b/libs/image/kis_ps_clipping.h
+index 5cb0da0..90f773b 100644
+--- a/libs/image/kis_ps_clipping.h
++++ b/libs/image/kis_ps_clipping.h
+@@ -34,7 +34,7 @@ namespace psClip {
+ inline bool isPassThroughGroup(const KisNode *node)
+ {
+     const KisGroupLayer *group = qobject_cast<const KisGroupLayer *>(node);
+-    return group && group->passThroughMode();
++    return group && group->effectivePassThroughMode();
+ }
+ 
+ /// The layer's clipping switch (Krita: "inherit alpha").
+@@ -93,6 +93,59 @@ inline bool inStackOf(const KisNode *node, const KisNodeSP &base)
+     return node && base && clipFlag(node) && !isPassThroughGroup(node) && baseOf(node) == base;
+ }
+ 
++/**
++ * A group drawn isolated even in "Pass Through" mode, like in Photoshop:
++ * it is a clipping base (the layer right above it is clipped) or is
++ * clipped itself.
++ */
++inline bool isolatesGroup(const KisNode *group)
++{
++    if (!group || !group->parent()) return false;
++    if (clipFlag(group)) return true;
++    KisNodeSP up = layerAbove(group);
++    return up && clipFlag(up.data());
++}
++
++/// Re-check the groups whose clipping may change when `node` changed its
++/// clipping switch: the node itself and the layer below it.
++inline void updateGroupsAround(KisNode *node)
++{
++    if (!node) return;
++    if (KisGroupLayer *g = qobject_cast<KisGroupLayer *>(node)) {
++        g->updatePsClipping();
++    }
++    KisNodeSP below = layerBelow(node);
++    if (KisGroupLayer *g = qobject_cast<KisGroupLayer *>(below.data())) {
++        g->updatePsClipping();
++    }
++}
++
++/// Re-check `node` and every group inside it.
++inline void updateGroupsBelow(KisNode *node)
++{
++    if (!node) return;
++    if (KisGroupLayer *g = qobject_cast<KisGroupLayer *>(node)) {
++        g->updatePsClipping();
++    }
++    for (KisNodeSP c = node->firstChild(); c; c = c->nextSibling()) {
++        updateGroupsBelow(c.data());
++    }
++}
++
++/// Re-check every group among the children of `parent` and inside the
++/// node `added` (after layers were added, removed or moved).
++inline void updateGroupsIn(KisNode *parent, KisNode *added = nullptr)
++{
++    if (parent) {
++        for (KisNodeSP c = parent->firstChild(); c; c = c->nextSibling()) {
++            if (KisGroupLayer *g = qobject_cast<KisGroupLayer *>(c.data())) {
++                g->updatePsClipping();
++            }
++        }
++    }
++    updateGroupsBelow(added);
++}
++
+ } // namespace psClip
+ 
+ #endif

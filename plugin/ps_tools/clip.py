@@ -731,7 +731,8 @@ def _set_clip(doc, nodes, on, active=None):
     if on:
         for n in todo:
             # a pass-through group has no pixels of its own to clip
-            if n.type() == "grouplayer" and n.passThroughMode():
+            if (n.type() == "grouplayer" and n.passThroughMode()
+                    and not core.native_group_clipping()):
                 n.setPassThroughMode(False)
     active = active or todo[-1]
     if _select(doc, todo, todo[-1]) and _run("toggle_layer_inherit_alpha"):
@@ -951,7 +952,7 @@ def native_sync(doc):
             elif n.inheritAlpha() and (dn is None or not (dn.inheritAlpha() or (
                     up is not None and up.inheritAlpha()))) and not _moved_with_base(n, dn, old):
                 clip_off.append(n)                 # dragged out of its stack
-    for parent, kids in _levels(doc.rootNode()):
+    for parent, kids in _levels(doc.rootNode()) if not core.native_group_clipping() else ():
         for n in kids:
             if n.type() == "grouplayer" and n.inheritAlpha() and n.passThroughMode():
                 n.setPassThroughMode(False)        # a clipped group is one "layer"

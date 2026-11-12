@@ -12,6 +12,7 @@
 <p><b>Clipping mask</b>: <b>Alt + click</b> the line between two layers in the Layers docker, or press <b>Ctrl+Alt+G</b> (taken over from Krita's Quick Ungroup), or right-click and choose <i>Create / Release Clipping Mask</i>.</p>
 <ul>
 <li><b>Krita PS</b>: clipping is part of the engine, exactly like Photoshop. Krita's <i>Inherit Alpha</i> switch (shown as <i>Clipping Mask</i>) is the clipping mask: the layer is clipped to the nearest unclipped layer below it in the same group, the stack is drawn on its own (clipped adjustment layers change only the base) and the base's blending mode applies to the whole stack. No hidden groups – layers can be moved, grouped and merged freely, and PSD files keep the clipping. "(clip)" groups of older documents are taken apart when the document is opened (the result looks the same).</li>
+<li><b>Krita PS</b>: new groups (Ctrl+G, New Group) are <i>Pass Through</i>, like in Photoshop – adjustment layers and Blend If inside a group work on everything below it. A layer can be clipped to a group (also a group inside a group): it clips to the group's content, and that group is then drawn isolated, exactly as Photoshop does. Releasing the clipping makes it Pass Through again.</li>
 <li>A layer dragged into or created inside a stack (or created while a clipped layer is selected) is clipped automatically. A clipped layer dragged out of its stack is released.</li>
 <li>Official Krita: the plugin builds a "<i>base</i> (clip)" group whose clipped layers use Inherit Alpha. The base's blending mode moves to the group.</li>
 </ul>

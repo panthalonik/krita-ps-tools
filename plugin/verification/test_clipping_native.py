@@ -121,6 +121,22 @@ class Structure(Base):
         self.assertTrue(g.inheritAlpha())
         self.assertFalse(g.passThroughMode())
 
+    def test_engine_5_keeps_pass_through_of_clipped_groups(self):
+        """Krita PS engine level 5 draws a clipped / base pass-through group
+        isolated by itself: the plugin leaves the user's setting alone (no
+        extra "Property changes" undo step)."""
+        g = make(self.doc, "Group", "grouplayer", above=self.top)
+        g.setPassThroughMode(True)
+        saved = core.engine_level
+        core.engine_level = lambda: 5
+        try:
+            clip.toggle(self.doc, g)
+            self.sync()
+        finally:
+            core.engine_level = saved
+        self.assertTrue(g.inheritAlpha())
+        self.assertTrue(g.passThroughMode())
+
     def test_ctrl_g_takes_the_whole_stack(self):
         wide, changed = clip.widen_to_stacks([self.c1])
         self.assertTrue(changed)

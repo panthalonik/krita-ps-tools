@@ -256,7 +256,9 @@ def engine_level():
     level of the C++ additions (see krita/plugins/filters/psfilters):
     1 = C++ filters + native masks on pass-through groups,
     2 = + Blend If in the compositing engine,
-    3 = + Photoshop clipping masks in the engine (and in PSD files)."""
+    3 = + Photoshop clipping masks in the engine (and in PSD files),
+    4 = + brush axis lock in C++,
+    5 = + clipping to Pass Through groups in the engine."""
     try:
         from PyQt5.QtWidgets import QApplication
         v = QApplication.instance().property("ps_tools_engine")
@@ -271,6 +273,13 @@ def native_clipping():
     layer below it, the stack is composited on its own with the base's
     blending mode, and PSD files keep it. No hidden "(clip)" groups."""
     return engine_level() >= 3
+
+
+def native_group_clipping():
+    """Krita PS: a Pass Through group that is a clipping base (or is
+    clipped) is drawn isolated by the engine, like in Photoshop - its
+    Pass Through setting does not have to be switched off."""
+    return engine_level() >= 5
 
 
 def native_blend_if():
