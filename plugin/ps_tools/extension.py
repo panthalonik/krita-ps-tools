@@ -579,6 +579,23 @@ class PSToolsExtension(Extension):
             mine.setShortcut(ks)
             log("%s assigned" % keys)
 
+    def _filter_menu(self, bar):
+        """Filter > Camera Raw Filter... at the top of Krita's Filter menu
+        (where Photoshop has it)."""
+        mine = self._my_action("ps_tools_camera_raw")
+        if mine is None:
+            return
+        for a in bar.actions():
+            m = a.menu()
+            if m is None or a.text().replace("&", "").strip().lower() != "filter":
+                continue
+            if mine not in m.actions():
+                first = m.actions()[0] if m.actions() else None
+                m.insertAction(first, mine)
+                if first is not None:
+                    m.insertSeparator(first)
+            return
+
     def _camera_raw_shortcut(self):
         """Shift+Ctrl+A = Camera Raw Filter (PS). In Krita it is Deselect, so
         Deselect gets Photoshop's Ctrl+D - only when Ctrl+D is free and the
@@ -620,6 +637,7 @@ class PSToolsExtension(Extension):
                     if qwin is not None and qwin.menuBar() is not None:
                         for m in qwin.menuBar().findChildren(QMenu):
                             self.swap_group_action(m, deep=False)
+                        self._filter_menu(qwin.menuBar())
             except Exception:
                 log("menu error: " + traceback.format_exc())
 

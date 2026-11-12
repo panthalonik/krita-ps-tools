@@ -566,7 +566,7 @@ class ColorPickerDialog(QDialog):
         add_sw.clicked.connect(self._add_swatch)
         add_sw.setEnabled(on_swatch is not None)
         for b in (ok, cancel, add_sw):
-            b.setMinimumWidth(130)
+            b.setMinimumWidth(150)
             right.addWidget(b)
         right.addStretch(1)
         root.addLayout(right)

@@ -2,7 +2,9 @@
 
 Krita 5.3.4.1 z narzędziami w stylu Photoshopa: wtyczka `ps_tools` (panel
 warstw, clipping maski, maski, Blend If, warstwy korekcyjne) oraz zmiany w C++
-(prawdziwe filtry Color Lookup, Selective Color; Blend If liczony przez silnik
+(prawdziwe filtry Color Lookup, Selective Color, Camera Raw Filter (zakładki
+Light, Color, Effects, Detail); panel Color i Color Picker jak w Photoshopie;
+Blend If liczony przez silnik
 na żywo; clipping maski jak w Photoshopie w silniku; maski na grupach Pass
 Through; clipping i Blend If w plikach PSD; poprawki silnika).
 

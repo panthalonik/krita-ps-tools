@@ -19,7 +19,7 @@ from krita import Krita, Selection
 from PyQt5.QtCore import QPointF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor, QConicalGradient, QPainter, QPen, QRadialGradient
 from PyQt5.QtWidgets import (QAbstractSpinBox, QButtonGroup, QCheckBox, QComboBox, QDialog,
-                             QDoubleSpinBox, QFrame, QHBoxLayout, QLabel, QMessageBox,
+                             QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
                              QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
                              QStackedWidget, QTabWidget, QToolButton, QVBoxLayout, QWidget)
 
@@ -611,14 +611,16 @@ class CameraRawPanel(QWidget):
         v.addWidget(mixer)
 
         grading = Section(u"Color Grading", True)
-        zrow = QHBoxLayout()
+        zrow = QGridLayout()
+        zrow.setSpacing(2)
         self.zone_buttons = QButtonGroup(self)
         for i, z in enumerate(ZONE_LABELS):
             b = QPushButton(z)
             b.setCheckable(True)
             b.setChecked(i == 1)
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             self.zone_buttons.addButton(b, i)
-            zrow.addWidget(b)
+            zrow.addWidget(b, i // 2, i % 2)
         grading.box.addLayout(zrow)
         self.wheel = ColorWheel()
         self.wheel.changed.connect(self._wheel)
