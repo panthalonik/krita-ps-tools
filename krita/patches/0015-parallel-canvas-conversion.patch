@@ -1,0 +1,61 @@
+diff --git a/libs/ui/canvas/kis_canvas2.cpp b/libs/ui/canvas/kis_canvas2.cpp
+index c1826ec..5d69113 100644
+--- a/libs/ui/canvas/kis_canvas2.cpp
++++ b/libs/ui/canvas/kis_canvas2.cpp
+@@ -9,6 +9,8 @@
+ 
+ #include "kis_canvas2.h"
+ 
++#include <QtConcurrent>
++
+ #include <functional>
+ #include <numeric>
+ 
+@@ -885,24 +887,32 @@ void KisCanvas2::resetCanvas(bool useOpenGL)
+ void KisCanvas2::startUpdateInPatches(const QRect &imageRect)
+ {
+     /**
+-     * We don't do patched loading for openGL canvas, because it loads
+-     * the tiles, which are basically "patches". Therefore, big chunks
+-     * of memory are never allocated.
++     * ps_tools patch: the whole image is converted for the canvas when a
++     * document is opened (and after some setting changes) - in the GUI
++     * thread, one patch after another, which froze the window for seconds
++     * on big images (2+ s for a 4096x4096 16-bit greyscale PNG). The patches
++     * are now converted in parallel (the same calls the image's worker
++     * threads make for every normal update, so they are thread safe).
+      */
+-    if (m_d->currentCanvasIsOpenGL) {
+-        startUpdateCanvasProjection(imageRect);
+-    } else {
+-        KisImageConfig imageConfig(true);
+-        int patchWidth = imageConfig.updatePatchWidth();
+-        int patchHeight = imageConfig.updatePatchHeight();
+-
+-        for (int y = 0; y < imageRect.height(); y += patchHeight) {
+-            for (int x = 0; x < imageRect.width(); x += patchWidth) {
+-                QRect patchRect(x, y, patchWidth, patchHeight);
+-                startUpdateCanvasProjection(patchRect);
+-            }
++    KisImageConfig imageConfig(true);
++    const int patchWidth = imageConfig.updatePatchWidth();
++    const int patchHeight = imageConfig.updatePatchHeight();
++
++    QVector<QRect> patches;
++    for (int y = 0; y < imageRect.height(); y += patchHeight) {
++        for (int x = 0; x < imageRect.width(); x += patchWidth) {
++            patches << QRect(imageRect.x() + x, imageRect.y() + y, patchWidth, patchHeight).intersected(imageRect);
+         }
+     }
++
++    if (patches.size() <= 1) {
++        startUpdateCanvasProjection(imageRect);
++        return;
++    }
++
++    QtConcurrent::blockingMap(patches, [this](const QRect &rc) {
++        startUpdateCanvasProjection(rc);
++    });
+ }
+ 
+ void KisCanvas2::setDisplayFilter(QSharedPointer<KisDisplayFilter> displayFilter)

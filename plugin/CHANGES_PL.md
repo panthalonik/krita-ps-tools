@@ -143,6 +143,7 @@ Testy: python verification/test_clipping_native.py (21 testów).
 
 - Łatka 0013: obraz 16-bit jest wyświetlany przez 8-bitowe tekstury karty graficznej, tak jak obraz 8-bit. Tekstury 16-bit (OpenGL: RGBA16, Direct3D/ANGLE: half float) to na wielu sterownikach wolna ścieżka — przy każdym pełnym odświeżeniu dużego obrazu 16-bit (otwarcie, duplikat warstwy) okno stawało na kilka sekund, a obraz 8-bit tej samej wielkości działał płynnie. Monitor i tak pokazuje 8 bitów. Nie dotyczy trybu HDR i OpenColorIO. Wpis „psTools16BitCanvasTextures=true” w kritarc przywraca zachowanie Krity.
 - Łatka 0014: PNG w skali szarości bez profilu ICC jest w sRGB (tak zakłada PNG, Blender, Photoshop i przeglądarki). Krita dawała 16-bitowym szarym PNG liniowy profil (g10): obraz wyglądał za jasno, a konwersja na RGB zmieniała jego wartości. Teraz dostaje profil szarości sRGB; liniowy tylko gdy plik ma gAMA 1.0 bez znacznika sRGB. Test w zbudowanej Kricie sprawdza profil i niezmienione piksele.
+- Łatka 0015: przy otwieraniu dokumentu Krita przelicza cały obraz na potrzeby ekranu w głównym wątku, kawałek po kawałku — okno stało: 4096×4096 PNG 8-bit ok. 0,6 s, 16-bit szary ok. 2–2,6 s (pomiar w prawdziwym oknie). Kawałki są teraz przeliczane równolegle na wszystkich rdzeniach.
 
 ## Dokumenty ze starszej wersji
 
