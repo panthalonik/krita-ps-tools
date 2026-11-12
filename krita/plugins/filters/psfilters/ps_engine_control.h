@@ -10,7 +10,7 @@
  *                                 ci/smoke/ps_smoke.py; the answer is put in
  *                                 "ps_tools_test_result". Commands may start
  *                                 with "#<n> " (to make every value new):
- *        stats | reset_stats | drop | perf <flags>
+ *        stats | notes | reset_stats | drop | perf <flags>
  *        dab <node uuid> <x> <y> <w> <h> <seed>
  *            fill a rect of the layer with a colour made from the seed and
  *            update it (what a brush dab does)

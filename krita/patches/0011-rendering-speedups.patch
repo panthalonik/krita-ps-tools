@@ -1,8 +1,8 @@
 diff --git a/libs/image/kis_async_merger.cpp b/libs/image/kis_async_merger.cpp
-index 946d2c6..c75d53d 100644
+index 946d2c6..258810c 100644
 --- a/libs/image/kis_async_merger.cpp
 +++ b/libs/image/kis_async_merger.cpp
-@@ -39,6 +39,15 @@
+@@ -39,6 +39,16 @@
  #include "kis_transparency_mask.h"
  #include "kis_pixel_selection.h"
  #include "kis_ps_clipping.h"
@@ -13,12 +13,13 @@ index 946d2c6..c75d53d 100644
 +#include <QMutex>
 +#include <QMutexLocker>
 +#include <QRegion>
++#include <QStringList>
 +#include <QSharedPointer>
 +#include <atomic>
  
  
  //#define DEBUG_MERGER
-@@ -287,14 +296,28 @@ struct ClipStack {
+@@ -287,14 +297,28 @@ struct ClipStack {
      KisPaintDeviceSP below;         // the real projection of the level
      KisPaintDeviceSP stack;         // base + clipped layers
      QRect rect;
@@ -49,7 +50,7 @@ index 946d2c6..c75d53d 100644
      s.rect = rect;
      projection = s.stack;
  }
-@@ -312,12 +335,420 @@ void closeClipStack(ClipStack &s, KisPaintDeviceSP &projection)
+@@ -312,12 +336,448 @@ void closeClipStack(ClipStack &s, KisPaintDeviceSP &projection)
          gc.setChannelFlags(s.base->projectionLeaf()->channelFlags());
          gc.bitBlt(s.rect.topLeft(), s.stack, s.rect);
      }
@@ -129,6 +130,13 @@ index 946d2c6..c75d53d 100644
 +    QVector<PsCacheEntrySP> entries;
 +    quint64 clock = 0;
 +    PsCacheStats stats;
++    QStringList notes;                   // why the last inconsistencies happened (tests)
++
++    void note(const QString &text) {
++        QMutexLocker l(&lock);
++        notes.append(text);
++        while (notes.size() > 8) notes.removeFirst();
++    }
 +
 +    void killLocked(int i) {
 +        entries[i]->alive = false;
@@ -409,6 +417,19 @@ index 946d2c6..c75d53d 100644
 +    return dev;
 +}
 +
++void psNoteInconsistent(const char *mode, KisProjectionLeafSP pivot, KisNodeSP stackBase,
++                        int scopes, bool temp)
++{
++    KisNodeSP node = pivot->node();
++    KisProjectionLeafSP parent = pivot->parent();
++    PsCacheStore::instance()->note(QString("%1 pivot=%2 level=%3 stackBase=%4 scopes=%5 temp=%6")
++        .arg(mode)
++        .arg(node ? node->name() : QString("?"))
++        .arg(parent && parent->node() ? parent->node()->name() : QString("?"))
++        .arg(stackBase ? stackBase->name() : QString("-"))
++        .arg(scopes).arg(temp));
++}
++
 +/// Marks an area of the device as filled - unless the entry was dropped or
 +/// got a new device meanwhile (a concurrent update).
 +void psCacheMarkValid(const PsCacheEntrySP &entry, bool above, KisPaintDeviceSP device, const QRect &rect)
@@ -455,11 +476,19 @@ index 946d2c6..c75d53d 100644
 +        .arg(st.skippedVaries.load()).arg(st.inconsistent.load()).arg(entries);
 +}
 +
++QString psPerf::notes()
++{
++    QMutexLocker l(&PsCacheStore::instance()->lock);
++    return PsCacheStore::instance()->notes.join(" ; ");
++}
++
 +void psPerf::resetStats()
 +{
 +    PsCacheStats &st = PsCacheStore::instance()->stats;
 +    st.belowHit = st.belowFill = st.aboveHit = st.aboveFill = 0;
 +    st.dropped = st.skippedVaries = st.inconsistent = 0;
++    QMutexLocker l(&PsCacheStore::instance()->lock);
++    PsCacheStore::instance()->notes.clear();
 +}
 +
 +void psPerf::dropCaches()
@@ -470,7 +499,7 @@ index 946d2c6..c75d53d 100644
  /*********************************************************************/
  /*                     KisAsyncMerger                                */
  /*********************************************************************/
-@@ -329,9 +760,18 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
+@@ -329,9 +789,18 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
      PassThroughScopes passThroughScopes;
      ClipStack clipStack;
  
@@ -489,7 +518,7 @@ index 946d2c6..c75d53d 100644
  
          /**
           * In some unidentified cases the nodes might be removed
-@@ -368,18 +808,84 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
+@@ -368,18 +837,86 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
              setupProjection(currentLeaf, applyRect, useTempProjections);
          }
  
@@ -547,10 +576,12 @@ index 946d2c6..c75d53d 100644
 +                if (!consistent) {
 +                    // cannot happen when the plan's checks hold: drop everything
 +                    psStats.inconsistent++;
++                    psNoteInconsistent("hit", currentLeaf, clipStack.base, passThroughScopes.size(), useTempProjections);
 +                    PsCacheStore::instance()->dropAll();
 +                }
 +            } else if (!consistent) {
 +                psStats.inconsistent++;
++                psNoteInconsistent("fill", currentLeaf, clipStack.base, passThroughScopes.size(), useTempProjections);
 +                PsCacheStore::instance()->dropAll();
 +            } else {
 +                KisPaintDeviceSP saved = psCacheDevice(psLevel->entry, false, m_currentProjection);
@@ -574,7 +605,7 @@ index 946d2c6..c75d53d 100644
          KisUpdateOriginalVisitor originalVisitor(applyRect,
                                                   m_currentProjection);
  
-@@ -421,6 +927,19 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
+@@ -421,6 +958,19 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
  
          compositeWithProjection(currentLeaf, applyRect);
  
@@ -626,10 +657,10 @@ index c086a2e..428d1c7 100644
       *
 diff --git a/libs/image/kis_ps_perf.h b/libs/image/kis_ps_perf.h
 new file mode 100644
-index 0000000..3a0ff3c
+index 0000000..44ca4c4
 --- /dev/null
 +++ b/libs/image/kis_ps_perf.h
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,51 @@
 +/*
 + *  ps_tools patch: switches and counters of the Photoshop-like rendering
 + *  speed-ups (see kis_async_merger.cpp and kis_simple_update_queue.cpp).
@@ -673,6 +704,8 @@ index 0000000..3a0ff3c
 +/// Counters for tests: "belowHit=.. belowFill=.. aboveHit=.. ..."
 +KRITAIMAGE_EXPORT QString stats();
 +KRITAIMAGE_EXPORT void resetStats();
++/// Details of the last unexpected states met by the caches (tests).
++KRITAIMAGE_EXPORT QString notes();
 +/// Drops every cached composite (tests; also when the flags change).
 +KRITAIMAGE_EXPORT void dropCaches();
 +

@@ -78,6 +78,7 @@ QString PsEngineControl::run(const QString &command)
     const QString cmd = args[0];
 
     if (cmd == "stats") return psPerf::stats();
+    if (cmd == "notes") return "notes: " + psPerf::notes();
     if (cmd == "reset_stats") {
         psPerf::resetStats();
         return "ok";

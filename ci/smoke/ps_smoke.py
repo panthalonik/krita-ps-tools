@@ -611,6 +611,7 @@ def run_script(k, eng, flags, priority=None):
         doc.waitForDone()
         shots.append(bytes(doc.pixelData(0, 0, CW, CH)))
     stats = eng.stats()
+    stats["notes"] = eng.cmd("notes")
     # the cached result must equal a full recomputation
     before = shots[-1]
     doc.refreshProjection()
@@ -666,10 +667,15 @@ def cache_check(k):
     return out
 
 
-def paint_benchmark(k, w=4000, h=3000, layers=40):
-    """Seconds for a stroke of 150 dabs and for 4 changes of an adjustment
-    layer, in a big document with many layers, without / with the
-    speed-ups."""
+def paint_benchmark(k, w=3000, h=2000, layers=30):
+    """A photobash-like document (every layer covers the canvas, a few
+    blend modes, Normal layers on top, a curves layer) without / with the
+    speed-ups:
+      dab_ms_*   - milliseconds per dab when every dab is waited for (what
+                   you feel while painting), on a layer in the middle, at
+                   the top and near the bottom of the stack
+      stroke_*   - seconds for 120 dabs sent at once (throughput)
+      adjust_x4  - seconds for 4 changes of the curves layer"""
     import time
     eng = Engine()
     out = {}
@@ -681,20 +687,21 @@ def paint_benchmark(k, w=4000, h=3000, layers=40):
         root = doc.rootNode()
         above = None
         nodes = []
-        modes = ["normal", "normal", "multiply", "normal", "screen", "normal", "overlay", "normal"]
+        modes = ["normal", "multiply", "normal", "screen", "normal", "overlay", "normal", "soft_light"]
         for i in range(layers):
             n = doc.createNode("L%d" % i, "paintlayer")
             root.addChildNode(n, above)
-            if i:
+            if 0 < i < layers - 6:
                 n.setBlendingMode(modes[i % len(modes)])
-            for j in range(6):
+            if i:
+                n.setOpacity(150 + (i * 37) % 100)
+            eng.cmd("dab %s 0 0 %d %d %d" % (eng.uid(n), w, h, i * 11 + 3))   # covers the canvas
+            for j in range(4):
                 s = i * 13 + j * 7 + 1
-                eng.dab(n, (s * 397) % (w - 1500), (s * 211) % (h - 1200), 900 + s % 600, 700 + s % 500, s)
-            if i == 0:
-                eng.dab(n, 0, 0, w, h, 3)
+                eng.dab(n, (s * 397) % (w - 900), (s * 211) % (h - 700), 600 + s % 300, 400 + s % 300, s)
             nodes.append(n)
             above = n
-            if i == 30:
+            if i == layers // 2:
                 f = k.filter("perchannel")
                 cfg = f.configuration()
                 cfg.setProperty("curve0", "0,0;0.5,0.6;1,1;")
@@ -707,11 +714,17 @@ def paint_benchmark(k, w=4000, h=3000, layers=40):
         doc.refreshProjection()
         doc.waitForDone()
         res = {}
-        for name, node in (("paint_mid", nodes[20]), ("paint_top", nodes[-1]), ("paint_bottom", nodes[1])):
+        for name, node in (("mid", nodes[layers // 2 + 3]), ("top", nodes[-1]), ("bottom", nodes[2])):
+            uid = eng.uid(node)
             t0 = time.perf_counter()
-            eng.dabs(node, 150, 300, 300, 260, 260, 18, 11, 2000)
+            for i in range(60):
+                eng.cmd("dab %s %d %d 220 220 %d" % (uid, 400 + i * 21, 300 + i * 13, 3000 + i))
+                doc.waitForDone()
+            res["dab_ms_" + name] = round((time.perf_counter() - t0) * 1000.0 / 60, 2)
+            t0 = time.perf_counter()
+            eng.dabs(node, 120, 300, 900, 220, 220, 19, -5, 4000)
             doc.waitForDone()
-            res[name] = round(time.perf_counter() - t0, 3)
+            res["stroke_" + name] = round(time.perf_counter() - t0, 3)
         t0 = time.perf_counter()
         for i in range(4):
             f = k.filter("perchannel")
@@ -726,5 +739,5 @@ def paint_benchmark(k, w=4000, h=3000, layers=40):
         doc.close()
     eng.cmd("perf 15")
     eng.cmd("drop")
-    out["size"] = "%dx%d, %d layers + curves; 150 dabs of 260 px" % (w, h, layers)
+    out["size"] = "%dx%d, %d full layers + curves; dabs of 220 px" % (w, h, layers)
     return out
