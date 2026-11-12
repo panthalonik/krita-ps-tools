@@ -60,5 +60,6 @@ if (-not $json.ok_render) { Write-Host 'FAIL: rendering checks (Blend If / clipp
 if (-not $json.ok_groups) { Write-Host 'FAIL: Blend If / clipping / adjustment layers inside Pass Through groups'; exit 1 }
 if ($json.filters -contains 'pscameraraw' -and -not $json.ok_camera_raw) { Write-Host 'FAIL: Camera Raw Filter (see "camera_raw" in smoke.json)'; exit 1 }
 if (-not $json.ok_psd_pixels) { Write-Host 'FAIL: PSD export + import changed layer pixels (see "psd_pixels" in smoke.json)'; exit 1 }
+if (-not $json.ok_grey_png) { Write-Host 'FAIL: 16-bit grey PNG profile / pixels (see "grey_png" in smoke.json)'; exit 1 }
 if (-not $json.ok_import) { Write-Host 'FAIL: the PSD did not import back with adjustment layers / clipping / Blend If'; exit 1 }
 exit $psdStatus

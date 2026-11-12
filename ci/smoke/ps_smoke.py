@@ -139,6 +139,7 @@ def main(args):
             res["ok_camera_raw"] = camera_raw_check(k, res)
 
         res["ok_psd_pixels"] = psd_roundtrip_check(k, res, out_dir)
+        res["ok_grey_png"] = grey_png_check(k, res, out_dir)
 
         doc.setBatchmode(True)
         res["export_psd"] = bool(doc.exportImage(os.path.join(out_dir, "smoke.psd"), InfoObject()))
@@ -418,6 +419,55 @@ def camera_raw_check(k, res):
         ok = ok and same and brighter and changed and grey and live
         doc.close()
     res["camera_raw"] = out
+    return ok
+
+
+def grey_png_check(k, res, out_dir):
+    """Patch 0014: a 16-bit greyscale PNG without an ICC profile opens with
+    the sRGB grey profile (linear only when gAMA says 1.0), pixels intact."""
+    import struct
+    import zlib
+
+    def png(path, chunks):
+        def chunk(t, data):
+            return struct.pack(">I", len(data)) + t + data + struct.pack(">I", zlib.crc32(t + data) & 0xffffffff)
+        raw = b"".join(b"\x00" + b"".join(struct.pack(">H", (x * 4000 + y * 300) & 0xffff) for x in range(16))
+                       for y in range(16))
+        data = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 16, 16, 16, 0, 0, 0, 0))
+        for t, d in chunks:
+            data += chunk(t, d)
+        data += chunk(b"tEXt", b"File\x00scene.blend") + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+        with open(path, "wb") as f:
+            f.write(data)
+        return raw
+
+    out = res["grey_png"] = {}
+    ok = True
+    cases = (("srgb", [(b"sRGB", b"\x03"), (b"gAMA", struct.pack(">I", 45455))], "srgbtrc"),
+             ("plain", [], "srgbtrc"),
+             ("linear", [(b"gAMA", struct.pack(">I", 100000))], "g10"))
+    for name, chunks, want in cases:
+        path = os.path.join(out_dir, "grey16_%s.png" % name)
+        raw = png(path, chunks)
+        k.setBatchmode(True)
+        try:
+            d = k.openDocument(path)
+        finally:
+            k.setBatchmode(False)
+        if d is None:
+            out[name] = "could not open"
+            ok = False
+            continue
+        d.waitForDone()
+        prof = d.colorProfile()
+        layer = [n for n in d.rootNode().childNodes() if n.type() == "paintlayer"][0]
+        px = bytes(layer.pixelData(0, 0, 16, 16))
+        grey = [px[i] | (px[i + 1] << 8) for i in range(0, len(px), 4)]
+        expect = [(x * 4000 + y * 300) & 0xffff for y in range(16) for x in range(16)]
+        out[name] = {"model": d.colorModel(), "depth": d.colorDepth(), "profile": prof,
+                     "pixels_same": grey == expect}
+        ok = ok and want in prof and grey == expect
+        d.close()
     return ok
 
 

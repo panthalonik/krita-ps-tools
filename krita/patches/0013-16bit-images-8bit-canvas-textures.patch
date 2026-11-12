@@ -1,0 +1,30 @@
+diff --git a/libs/ui/opengl/kis_opengl_image_textures.cpp b/libs/ui/opengl/kis_opengl_image_textures.cpp
+index f45e5b0..7b5fd4d 100644
+--- a/libs/ui/opengl/kis_opengl_image_textures.cpp
++++ b/libs/ui/opengl/kis_opengl_image_textures.cpp
+@@ -673,7 +673,24 @@ void KisOpenGLImageTextures::updateTextureFormat()
+ 
+     const bool useHDRMode = KisOpenGLModeProber::instance()->useHDRMode();
+     const KoID colorModelId = m_image->colorSpace()->colorModelId();
+-    const KoID colorDepthId = useHDRMode ? Float16BitsColorDepthID : m_image->colorSpace()->colorDepthId();
++
++    /**
++     * ps_tools patch: 16-bit integer images are shown through 8-bit textures,
++     * like 8-bit ones. The 16-bit textures (GL_RGBA16 with GL_BGRA, or half
++     * floats with ANGLE) are a slow path on many drivers: every full update
++     * of a big 16-bit image (opening it, duplicating a layer...) froze the
++     * window for seconds while an 8-bit image of the same size did not.
++     * The monitor shows 8 bits anyway. Not with HDR or OpenColorIO (they need
++     * the precision); "psTools16BitCanvasTextures=true" in kritarc restores
++     * Krita's behaviour.
++     */
++    KoID imageDepthId = m_image->colorSpace()->colorDepthId();
++    if (!useHDRMode && m_internalColorManagementActive &&
++        imageDepthId == Integer16BitsColorDepthID &&
++        !KisConfig(true).readEntry("psTools16BitCanvasTextures", false)) {
++        imageDepthId = Integer8BitsColorDepthID;
++    }
++    const KoID colorDepthId = useHDRMode ? Float16BitsColorDepthID : imageDepthId;
+ 
+     KoID destinationColorModelId = RGBAColorModelID;
+     KoID destinationColorDepthId = Integer8BitsColorDepthID;

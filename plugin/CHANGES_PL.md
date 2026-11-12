@@ -139,6 +139,11 @@ Testy: python verification/test_clipping_native.py (21 testów).
 - Przyczyna po stronie Krity: przy wczytywaniu PSD każdy piksel szedł przez wywołanie funkcji i wyszukiwanie każdego kanału w słowniku. Łatka 0012: warstwy RGB i Grayscale 8/16-bit są przepisywane całymi wierszami, z identycznym wynikiem.
 - Test w zbudowanej Kricie: PSD zapisany i otwarty ponownie ma bajt w bajt te same piksele (RGB/szarość, 8/16 bit, warstwy przesunięte), a wydanie nie jest publikowane, gdy test dymny nie przejdzie (paczka zostaje wtedy do pobrania przy przebiegu).
 
+## Wersja en20 — obrazy 16-bit (np. mapy głębi z Blendera)
+
+- Łatka 0013: obraz 16-bit jest wyświetlany przez 8-bitowe tekstury karty graficznej, tak jak obraz 8-bit. Tekstury 16-bit (OpenGL: RGBA16, Direct3D/ANGLE: half float) to na wielu sterownikach wolna ścieżka — przy każdym pełnym odświeżeniu dużego obrazu 16-bit (otwarcie, duplikat warstwy) okno stawało na kilka sekund, a obraz 8-bit tej samej wielkości działał płynnie. Monitor i tak pokazuje 8 bitów. Nie dotyczy trybu HDR i OpenColorIO. Wpis „psTools16BitCanvasTextures=true” w kritarc przywraca zachowanie Krity.
+- Łatka 0014: PNG w skali szarości bez profilu ICC jest w sRGB (tak zakłada PNG, Blender, Photoshop i przeglądarki). Krita dawała 16-bitowym szarym PNG liniowy profil (g10): obraz wyglądał za jasno, a konwersja na RGB zmieniała jego wartości. Teraz dostaje profil szarości sRGB; liniowy tylko gdy plik ma gAMA 1.0 bez znacznika sRGB. Test w zbudowanej Kricie sprawdza profil i niezmienione piksele.
+
 ## Dokumenty ze starszej wersji
 
 Przy pierwszym otwarciu dokumentu wtyczka zamienia „Layer Mask” (lub ukryty magazyn) na maskę przezroczystości z tą samą zawartością, przywraca pełną wbudowaną maskę warstwy i przelicza Blend If. Po zapisaniu taki dokument nie będzie poprawnie obsługiwany przez starszą wersję wtyczki — przed pierwszym użyciem zrób kopię ważnych plików .kra.

@@ -1,0 +1,40 @@
+diff --git a/libs/ui/kis_png_converter.cpp b/libs/ui/kis_png_converter.cpp
+index 71bda1f..03ccc60 100644
+--- a/libs/ui/kis_png_converter.cpp
++++ b/libs/ui/kis_png_converter.cpp
+@@ -42,6 +42,7 @@
+ #include "kis_undo_stores.h"
+ #include <KisDocument.h>
+ #include <KoColorModelStandardIds.h>
++#include <cmath>
+ #include <kis_config.h>
+ #include <kis_cursor_override_hijacker.h>
+ #include <kis_group_layer.h>
+@@ -596,6 +597,27 @@ KisImportExportErrorCode KisPNGConverter::buildImage(QIODevice* iod)
+         dbgFile << "no embedded profile, will use the default sRGB profile";
+     }
+ 
++    // ps_tools patch: a greyscale PNG without an ICC profile is sRGB encoded
++    // (the PNG default, and what Blender, Photoshop and browsers assume).
++    // The sRGB default above is an RGB profile, so it was dropped for grey
++    // images and 16-bit ones got Krita's linear (g10) grey profile: the image
++    // looked too light and converting it to RGB changed its values. Only a
++    // gAMA of 1.0 without an sRGB chunk means linear data.
++    if (csName.first == GrayAColorModelID.id() &&
++        profile == KoColorSpaceRegistry::instance()->p709SRGBProfile()) {
++        bool linear = false;
++        if (png_get_valid(png_ptr, info_ptr, PNG_INFO_gAMA) && !png_get_valid(png_ptr, info_ptr, PNG_INFO_sRGB)) {
++            double fileGamma = 0.0;
++            png_get_gAMA(png_ptr, info_ptr, &fileGamma);
++            linear = std::fabs(fileGamma - 1.0) < 0.05;
++        }
++        const KoColorProfile *grayProfile = KoColorSpaceRegistry::instance()->profileByName(
++            linear ? "Gray-D50-elle-V2-g10.icc" : "Gray-D50-elle-V2-srgbtrc.icc");
++        if (grayProfile) {
++            profile = grayProfile;
++        }
++    }
++
+     const QString colorSpaceId =
+         KoColorSpaceRegistry::instance()->colorSpaceId(csName.first, csName.second);
+ 
