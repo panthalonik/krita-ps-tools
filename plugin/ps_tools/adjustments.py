@@ -21,6 +21,8 @@ ANNOTATION = "ps_tools_adjustments"
 
 # Photoshop menu (None = separator). Disabled entries have no Krita equivalent.
 MENU = [
+    ("camera_raw", u"Camera Raw…"),
+    None,
     ("clarity", u"Clarity…"),
     ("grain", u"Grain…"),
     None,
@@ -48,8 +50,20 @@ MENU = [
 
 UNAVAILABLE = {}
 
+
+def refresh_unavailable():
+    """Camera Raw needs the C++ filter of Krita PS."""
+    try:
+        if "pscameraraw" not in Krita.instance().filters():
+            UNAVAILABLE["camera_raw"] = u"Needs Krita PS (this repository's build of Krita)"
+        else:
+            UNAVAILABLE.pop("camera_raw", None)
+    except Exception:
+        pass
+
 # kind -> (PS title / layer base name, "filter"|"fill", krita filter/generator id)
 KINDS = {
+    "camera_raw": (u"Camera Raw", "filter", "pscameraraw"),
     "clarity": (u"Clarity", "filter", "unsharp"),
     "grain": (u"Grain", "filter", "noise"),
     "brightness_contrast": (u"Brightness/Contrast", "filter", "perchannel"),
@@ -88,6 +102,7 @@ FILTER_TO_KIND = {
     "posterize": "posterize", "threshold": "threshold", "gradientmap": "gradient_map",
     "noise": "grain", "unsharp": "clarity",
     "pscolorlookup": "color_lookup", "psselectivecolor": "selective_color",
+    "pscameraraw": "camera_raw",
 }
 
 PHOTO_FILTERS = [
@@ -105,6 +120,9 @@ IDENTITY_CURVE = [[0.0, 0.0], [1.0, 1.0]]
 
 
 def defaults(kind):
+    if kind == "camera_raw":
+        from . import camera_raw
+        return camera_raw.defaults()
     d = {
         "clarity": {"amount": 25, "radius": 0},
         "grain": {"amount": 25, "intensity": 50},
@@ -449,6 +467,9 @@ def build_props(doc, kind, p):
         props = _lut_props(p)
     elif kind == "selective_color":
         props = _selective_props(p)
+    elif kind == "camera_raw":
+        from . import camera_raw
+        props = camera_raw.build_props(p)
     elif kind == "solid_color":
         props = {"color": QColor(p["color"])}
     elif kind == "photo_filter":
@@ -462,6 +483,13 @@ def build_props(doc, kind, p):
 
 def params_from_node(doc, node, kind):
     """Read params back from the layer (annotation first, then the config)."""
+    if kind == "camera_raw":
+        from . import camera_raw
+        p = camera_raw.params_from_node(node)       # the filter itself is the truth
+        rec = recall(doc, node)
+        if rec and isinstance(rec.get("params"), dict) and rec["params"].get("wb_mode"):
+            p["wb_mode"] = rec["params"]["wb_mode"]
+        return p
     rec = recall(doc, node)
     if rec and rec.get("kind") == kind and isinstance(rec.get("params"), dict):
         p = defaults(kind)
@@ -520,6 +548,11 @@ def kind_of(doc, node):
     if node is None:
         return None
     t = node.type()
+    if t == "filtermask":
+        try:
+            return "camera_raw" if node.filter().name() == "pscameraraw" else None
+        except Exception:
+            return None
     if t == "paintlayer":
         rec = recall(doc, node)
         if rec and rec.get("kind") in BAKED_KINDS:

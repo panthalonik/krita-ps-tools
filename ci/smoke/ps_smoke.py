@@ -135,6 +135,8 @@ def main(args):
                             and c["group_bi_bright_below_magenta"][:3] == [255, 0, 255])
 
         res["ok_groups"] = groups_check(k, res)
+        if "pscameraraw" in res["filters"]:
+            res["ok_camera_raw"] = camera_raw_check(k, res)
 
         doc.setBatchmode(True)
         res["export_psd"] = bool(doc.exportImage(os.path.join(out_dir, "smoke.psd"), InfoObject()))
@@ -324,6 +326,85 @@ def clip_to_groups_check(k, res):
     ok &= c["clipgroup_removed_green"][:3] == [0, 255, 0]
     res["ok_clip_to_groups"] = bool(ok)
     doc.close()
+    return ok
+
+
+def camera_raw_check(k, res):
+    """Camera Raw Filter (pscameraraw): as a filter layer and as a filter
+    mask - neutral settings change nothing, the sliders change the image,
+    nothing breaks with every setting on (also in 16-bit)."""
+    out = {}
+    ok = True
+    for depth in ("U8", "U16"):
+        doc = k.createDocument(W, H, "cr", "RGBA", depth, "", 72.0)
+        root = doc.rootNode()
+        bg = doc.createNode("Photo", "paintlayer")
+        root.addChildNode(bg, None)
+        # a photo-like gradient with a bright and a dark part
+        bpp = 1 if depth == "U8" else 2
+        data = bytearray(W * H * 4 * bpp)
+        for y in range(H):
+            for x in range(W):
+                v = (30 + x * 3 + y) % 256 if x < W // 2 else 200 + (x + y) % 50
+                px = (min(255, v), min(255, v + 10), min(255, v // 2 + 40), 255)
+                i = (y * W + x) * 4 * bpp
+                if bpp == 1:
+                    data[i:i + 4] = bytes((px[2], px[1], px[0], 255))
+                else:
+                    for c, val in enumerate((px[2], px[1], px[0], 255)):
+                        data[i + 2 * c:i + 2 * c + 2] = (val * 257).to_bytes(2, "little")
+        bg.setPixelData(bytes(data), 0, 0, W, H)
+        doc.refreshProjection()
+        doc.waitForDone()
+        before = bytes(doc.pixelData(0, 0, W, H))
+
+        def layer(props):
+            f = k.filter("pscameraraw")
+            cfg = f.configuration()
+            for key, v in props.items():
+                cfg.setProperty(key, v)
+            f.setConfiguration(cfg)
+            sel = Selection()
+            sel.select(0, 0, W, H, 255)
+            n = doc.createFilterLayer("Camera Raw", f, sel)
+            root.addChildNode(n, bg)
+            doc.refreshProjection()
+            doc.waitForDone()
+            return n
+
+        n = layer({"exposure": 0.0, "clarity": 0.0})
+        same = bytes(doc.pixelData(0, 0, W, H)) == before
+        n.remove()
+        n = layer({"exposure": 1.0})
+        brighter = sum(bytes(doc.pixelData(0, 0, W, H))[1::4 * bpp]) > sum(before[1::4 * bpp])
+        n.remove()
+        everything = {"exposure": 0.4, "contrast": 30, "highlights": -50, "shadows": 40, "whites": 10,
+                      "blacks": -10, "temperature": 20, "tint": -10, "vibrance": 30, "saturation": -10,
+                      "mix_hue_red": 20, "cg_shadows_hue": 210, "cg_shadows_sat": 40, "texture": 30,
+                      "clarity": 40, "dehaze": 20, "vig_amount": -30, "grain_amount": 20,
+                      "sharp_amount": 60, "nr_lum": 30, "nr_color": 30,
+                      "curve_rgb": "0,0;0.4,0.35;1,1", "pc_shadows": 20}
+        n = layer(everything)
+        changed = bytes(doc.pixelData(0, 0, W, H)) != before
+        n.remove()
+        # as a filter mask on the layer (Filter > Camera Raw Filter)
+        f = k.filter("pscameraraw")
+        cfg = f.configuration()
+        cfg.setProperty("saturation", -100.0)
+        f.setConfiguration(cfg)
+        sel = Selection()
+        sel.select(0, 0, W, H, 255)
+        mask = doc.createFilterMask("Camera Raw Filter", f, sel)
+        bg.addChildNode(mask, None)
+        doc.refreshProjection()
+        doc.waitForDone()
+        px = bytes(doc.pixelData(5, 5, 1, 1))
+        grey = abs(px[0] - px[bpp]) <= 2 * bpp and abs(px[bpp] - px[2 * bpp]) <= 2 * bpp if bpp == 1 else True
+        out[depth] = {"neutral_unchanged": same, "exposure_brighter": brighter,
+                      "all_settings_changed": changed, "mask_greyscale": grey}
+        ok = ok and same and brighter and changed and grey
+        doc.close()
+    res["camera_raw"] = out
     return ok
 
 

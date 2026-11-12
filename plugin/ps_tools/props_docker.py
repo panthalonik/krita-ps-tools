@@ -806,12 +806,57 @@ class SelectiveColorEditor(Editor):
         return json_copy(self.p)
 
 
+class CameraRawEditor(Editor):
+    """The Camera Raw panels (Light, Color, Effects, Detail) for a Camera Raw
+    layer / filter mask; "Open Camera Raw…" gives the big window."""
+
+    def __init__(self, parent=None):
+        super(CameraRawEditor, self).__init__(parent)
+        from . import camera_raw
+        self.cr = camera_raw
+        b = QPushButton(u"Open Camera Raw…  (Shift+Ctrl+A)")
+        b.clicked.connect(self._open)
+        self.lay.addWidget(b)
+        self.panel = camera_raw.CameraRawPanel(self)
+        self.panel.setMinimumHeight(520)
+        self.panel.changed.connect(self.emit)
+        self.lay.addWidget(self.panel, 1)
+        self.doc = self.node = None
+
+    def bind(self, doc, node):
+        self.doc, self.node = doc, node
+        self.panel.on_auto_wb = self._auto_wb
+        self.panel.on_auto_tone = self._auto_tone
+
+    def _auto_wb(self):
+        r = self.cr.auto_white_balance(self.doc, self.node) if self.node is not None else None
+        if r:
+            self.panel._set_values({"temperature": r[0], "tint": r[1]})
+
+    def _auto_tone(self):
+        r = self.cr.auto_tone(self.doc, self.node) if self.node is not None else None
+        if r:
+            self.panel._set_values(r)
+
+    def _open(self):
+        if self.node is not None:
+            self.cr.open_layer(self.node)
+
+    def load(self, p):
+        self.panel.set_params(p)
+
+    def params(self):
+        return self.panel.params()
+
+
 def json_copy(d):
     import json
     return json.loads(json.dumps(d))
 
 
 def make_editor(kind):
+    if kind == "camera_raw":
+        return CameraRawEditor()
     if kind == "levels":
         return LevelsEditor()
     if kind == "curves":
@@ -977,7 +1022,8 @@ class PropertiesDocker(DockWidget):
                 return "lut|%s|%s|%s|%s|%s" % (cfg.property("lut_id"), cfg.property("name"),
                                                cfg.property("linear"), node.blendingMode(),
                                                node.opacity())
-            props = (node.filter().configuration().properties() if node.type() == "filterlayer"
+            props = (node.filter().configuration().properties()
+                     if node.type() in ("filterlayer", "filtermask")
                      else node.filterConfig().properties())
             return repr(sorted((k, repr(v)) for k, v in props.items())) + \
                 "|%s|%s" % (node.blendingMode(), node.opacity())
@@ -1055,6 +1101,8 @@ class PropertiesDocker(DockWidget):
             except Exception:
                 params = {}
         ed.set_params(params)
+        if kind == "camera_raw":
+            ed.bind(doc, node)
         self.stack.setCurrentWidget(ed)
         self.node = node
         self.snapshot = self._snap(node)
