@@ -203,6 +203,9 @@ class Probe(object):
                          ("canvasState", "OpenGLRenderer", "useOpenGL", "levelOfDetailEnabled")}
         win = k.activeWindow()
         win.qwindow().showMaximized()
+        if os.environ.get("PROBE_OPEN"):
+            yield from self.open_test(k, win)
+            return
         scenarios = os.environ.get("PROBE_SCENARIOS", "u8_plain,u16_plain,u8_layers10,u8_adjust,"
                                    "u8_group_blendif,u8_cameraraw,u8_layers10_adjust_group").split(",")
         if "pscameraraw" not in k.filters() and "u8_cameraraw" in scenarios:
@@ -249,12 +252,117 @@ class Probe(object):
                 save()
 
 
+def photo(seed):
+    import random
+    rnd = random.Random(seed)
+    data = bytearray(rnd.randbytes(N * N * 4))
+    data[3::4] = b"\xff" * (N * N)
+    return bytes(data)
+
+
+def big_document(k, path_kra, path_psd):
+    """A photobash-like 4096x4096 document: photos, partly painted layers,
+    a group, adjustment layers, clipping, Blend If."""
+    from krita import InfoObject
+    doc = k.createDocument(N, N, "big", "RGBA", "U8", "", 300.0)
+    root = doc.rootNode()
+    fill(root.childNodes()[0], 1)
+    above = root.childNodes()[0]
+    for i in range(3):
+        n = doc.createNode("Photo %d" % i, "paintlayer")
+        root.addChildNode(n, above)
+        n.setPixelData(photo(i), 0, 0, N, N)
+        above = n
+    g = doc.createGroupLayer("Group")
+    root.addChildNode(g, above)
+    for i in range(4):
+        n = doc.createNode("Painted %d" % i, "paintlayer")
+        g.addChildNode(n, None)
+        h = N // 4
+        part = bytearray(N * h * 4)
+        part[i * 4::16] = b"\x80" * (N * h // 4)
+        part[3::4] = b"\xff" * (N * h)
+        n.setPixelData(bytes(part), 0, i * h, N, h)
+        if i == 1:
+            n.setInheritAlpha(True)
+        if i == 2:
+            n.addChildNode(doc.createTransparencyMask("Blend If (Gray | 20/60 255/255 | 0/0 255/255)"), None)
+    for name, fid, props in (("Curves", "perchannel", {"curve0": "0,0;0.5,0.6;1,1;"}),
+                             ("Hue/Saturation", "hsvadjustment", {"s": 20})):
+        root.addChildNode(filter_layer(k, doc, name, fid, props), g)
+    doc.waitForDone()
+    k.setBatchmode(True)
+    try:
+        doc.setBatchmode(True)
+        doc.saveAs(path_kra)
+        doc.exportImage(path_psd, InfoObject())
+    finally:
+        k.setBatchmode(False)
+    doc.setModified(False)
+    doc.close()
+
+
+class OpenMixin(object):
+    def open_test(self, k, win):
+        base = os.path.dirname(OUT)
+        kra, psd = os.path.join(base, "big.kra"), os.path.join(base, "big.psd")
+        t = pc()
+        big_document(k, kra, psd)
+        RES["make_files"] = round(pc() - t, 1)
+        RES["file_mb"] = {p: round(os.path.getsize(p) / 1e6, 1) for p in (kra, psd) if os.path.exists(p)}
+        yield 3.0
+        for label, path in (("kra", kra), ("psd", psd), ("kra_again", kra)):
+            if not os.path.exists(path):
+                continue
+            prof = cProfile.Profile()
+            self.gaps = []
+            self.last = pc()
+            self.timer.start()
+            t0 = pc()
+            k.setBatchmode(True)
+            try:
+                doc = k.openDocument(path)
+            finally:
+                k.setBatchmode(False)
+            t_load = pc() - t0
+            win.addView(doc)
+            t_view = pc() - t0
+            prof.enable()
+            idle = None
+            while pc() - t0 < 120:
+                yield 0.1
+                if doc.tryBarrierLock():
+                    doc.unlock()
+                    idle = pc() - t0
+                    break
+            yield 4.0                    # what runs after (thumbnails, plugin...)
+            prof.disable()
+            self.timer.stop()
+            gaps = sorted(self.gaps, reverse=True)
+            st = io.StringIO()
+            pstats.Stats(prof, stream=st).sort_stats("cumulative").print_stats(25)
+            RES["runs"][label] = {
+                "load_call": round(t_load, 2), "view_added": round(t_view, 2),
+                "image_idle": idle and round(idle, 2),
+                "longest_gui_freezes": [round(g, 3) for g in gaps[:5]],
+                "frozen_total": round(sum(g for g in self.gaps if g > 0.05), 2),
+                "layers": len(doc.topLevelNodes()),
+                "python_profile": st.getvalue().splitlines()[:45]}
+            save()
+            doc.setModified(False)
+            doc.close()
+            yield 2.0
+
+
+Probe.open_test = OpenMixin.open_test
+
+
 class DupProbe(Extension):
     def setup(self):
         self.probe = Probe()
         Krita.instance().notifier().windowCreated.connect(
             lambda: QTimer.singleShot(8000, self.probe.go))
-        QTimer.singleShot(600000, lambda: (RES["errors"].append("timeout"), save(), os._exit(1)))
+        QTimer.singleShot(1200000, lambda: (RES["errors"].append("timeout"), save(), os._exit(1)))
 
     def createActions(self, window):
         pass
