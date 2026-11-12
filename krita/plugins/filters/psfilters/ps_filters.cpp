@@ -25,6 +25,7 @@
 
 #include "ps_kernels.h"
 #include "ps_axis_lock.h"
+#include "ps_engine_control.h"
 
 K_PLUGIN_FACTORY_WITH_JSON(KritaPsFiltersFactory, "kritapsfilters.json", registerPlugin<KritaPsFilters>();)
 
@@ -41,7 +42,10 @@ K_PLUGIN_FACTORY_WITH_JSON(KritaPsFiltersFactory, "kritapsfilters.json", registe
 ///   5 = + clipping to Pass Through groups: a pass-through group that is a
 ///       clipping base or is clipped is drawn isolated, like in Photoshop
 ///       (0009); new groups are Pass Through (0008)
-static const int PS_TOOLS_ENGINE_LEVEL = 5;
+///   6 = + speed-ups switched by the application property "ps_tools_perf":
+///       composite caches below / above the painted layer, the visible area
+///       rendered first, pooled clipping buffers (0011, kis_ps_perf.h)
+static const int PS_TOOLS_ENGINE_LEVEL = 6;
 
 KritaPsFilters::KritaPsFilters(QObject *parent, const QVariantList &)
     : QObject(parent)
@@ -54,6 +58,16 @@ KritaPsFilters::KritaPsFilters(QObject *parent, const QVariantList &)
         if (!axisLock) {
             axisLock = new PsAxisLock(QCoreApplication::instance());
             QCoreApplication::instance()->installEventFilter(axisLock);
+        }
+        // the engine speed-ups: switched (and tested) through app properties
+        static PsEngineControl *control = nullptr;
+        if (!control) {
+            control = new PsEngineControl(QCoreApplication::instance());
+            QCoreApplication::instance()->installEventFilter(control);
+            const QVariant flags = QCoreApplication::instance()->property("ps_tools_perf");
+            if (flags.isValid()) {
+                PsEngineControl::run(QString("perf %1").arg(flags.toInt()));
+            }
         }
     }
     KisFilterRegistry::instance()->add(KisFilterSP(new KisFilterPsColorLookup()));

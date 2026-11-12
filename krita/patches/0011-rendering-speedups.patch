@@ -1,0 +1,820 @@
+diff --git a/libs/image/kis_async_merger.cpp b/libs/image/kis_async_merger.cpp
+index 946d2c6..c75d53d 100644
+--- a/libs/image/kis_async_merger.cpp
++++ b/libs/image/kis_async_merger.cpp
+@@ -39,6 +39,15 @@
+ #include "kis_transparency_mask.h"
+ #include "kis_pixel_selection.h"
+ #include "kis_ps_clipping.h"
++#include "kis_ps_perf.h"
++#include "kis_cached_paint_device.h"
++#include "kis_projection_leaf.h"
++
++#include <QMutex>
++#include <QMutexLocker>
++#include <QRegion>
++#include <QSharedPointer>
++#include <atomic>
+ 
+ 
+ //#define DEBUG_MERGER
+@@ -287,14 +296,28 @@ struct ClipStack {
+     KisPaintDeviceSP below;         // the real projection of the level
+     KisPaintDeviceSP stack;         // base + clipped layers
+     QRect rect;
++    bool pooled = false;
+ };
+ 
++/// buffers of clipping stacks, reused (psPerf::PooledStacks); never freed
++KisCachedPaintDevice *stackPool()
++{
++    static KisCachedPaintDevice *pool = new KisCachedPaintDevice();
++    return pool;
++}
++
+ void openClipStack(ClipStack &s, KisNodeSP base, const QRect &rect, KisPaintDeviceSP &projection)
+ {
+     s.base = base;
+     s.below = projection;
+-    s.stack = new KisPaintDevice(projection->colorSpace());
+-    s.stack->prepareClone(projection);
++    if (psPerf::on(psPerf::PooledStacks)) {
++        s.stack = stackPool()->getDevice(projection);
++        s.pooled = true;
++    } else {
++        s.stack = new KisPaintDevice(projection->colorSpace());
++        s.stack->prepareClone(projection);
++        s.pooled = false;
++    }
+     s.rect = rect;
+     projection = s.stack;
+ }
+@@ -312,12 +335,420 @@ void closeClipStack(ClipStack &s, KisPaintDeviceSP &projection)
+         gc.setChannelFlags(s.base->projectionLeaf()->channelFlags());
+         gc.bitBlt(s.rect.topLeft(), s.stack, s.rect);
+     }
++    if (s.pooled) {
++        stackPool()->putDevice(s.stack);
++    }
+     s = ClipStack();
+ }
+ 
++/*********************************************************************/
++/*        Photoshop-like composite caches (ps_tools patch)           */
++/*********************************************************************/
++
++/**
++ * While one layer (the "pivot") is painted or changed, every update starts
++ * at that layer and, on the pivot's level, composites again all the layers
++ * below it and all the layers above it. Photoshop keeps the composite of
++ * what is below the layer (and of what is above it) instead. Here:
++ *
++ *  - below cache: the state of the level's projection right before the
++ *    pivot is composited, saved per pixel the first time an area is
++ *    rendered and copied back on the next updates of that area. The
++ *    layers below the pivot are then not touched at all.
++ *  - above cache: the topmost layers of the level, when all are plain
++ *    Normal layers (no adjustment, Blend If, clipping, style, channel
++ *    flags), merged into one device: Normal "over" is associative, so
++ *    "M over X" equals compositing them one by one (up to rounding).
++ *
++ * Every level on the way from the painted layer to the root has its own
++ * pivot (the group holding the layer is the pivot of the group's level),
++ * so nested groups are cached too.
++ *
++ * Validity: a cache entry only holds layers other than its pivot and the
++ * pivot's subtree. Any update starting elsewhere in the same image drops
++ * the entry (a changed layer, a moved layer, a property change, a full
++ * refresh...). An entry also remembers the graph sequence number and the
++ * pivot's clipping switch. The cache is used only when every rect of the
++ * update is the same (no blur-like layer above needs a bigger area).
++ */
++struct PsCacheEntry {
++    KisNodeWSP pivot;
++    const KisNode *level = nullptr;      // the projection parent (identity)
++    const KisNode *root = nullptr;       // the image (identity)
++    int lod = 0;
++    int graphSeq = 0;
++    bool pivotClip = false;
++    const KoColorSpace *colorSpace = nullptr;
++
++    KisPaintDeviceSP below;
++    QRegion belowValid;
++
++    QVector<const KisNode*> run;         // above run, bottom to top
++    KisPaintDeviceSP above;
++    QRegion aboveValid;
++
++    quint64 lastUse = 0;
++    bool alive = true;
++};
++typedef QSharedPointer<PsCacheEntry> PsCacheEntrySP;
++
++struct PsCacheStats {
++    std::atomic<int> belowHit {0}, belowFill {0}, aboveHit {0}, aboveFill {0};
++    std::atomic<int> dropped {0}, skippedVaries {0}, inconsistent {0};
++};
++
++class PsCacheStore
++{
++public:
++    static PsCacheStore *instance() {
++        static PsCacheStore *store = new PsCacheStore();     // never freed
++        return store;
++    }
++
++    static const int MaxEntries = 6;
++
++    QMutex lock;
++    QVector<PsCacheEntrySP> entries;
++    quint64 clock = 0;
++    PsCacheStats stats;
++
++    void killLocked(int i) {
++        entries[i]->alive = false;
++        entries.removeAt(i);
++        stats.dropped++;
++    }
++
++    void dropAll() {
++        QMutexLocker l(&lock);
++        while (!entries.isEmpty()) killLocked(entries.size() - 1);
++    }
++};
++
++std::atomic<int> s_psPerfFlags {psPerf::AllFlags};
++
++const KisNode *rootOf(const KisNode *node)
++{
++    while (node && node->parent()) node = node->parent().data();
++    return node;
++}
++
++bool isSelfOrDescendant(const KisNode *node, const KisNode *ancestor)
++{
++    for (; node; node = node->parent().data()) {
++        if (node == ancestor) return true;
++    }
++    return false;
++}
++
++/// At the start of every merge: drop the entries this update may change.
++void psCacheOnMergeStart(KisBaseRectsWalker &walker)
++{
++    PsCacheStore *store = PsCacheStore::instance();
++    KisNodeSP start = walker.startNode();
++    const bool update = walker.type() == KisBaseRectsWalker::UPDATE ||
++                        walker.type() == KisBaseRectsWalker::UPDATE_NO_FILTHY;
++    const KisNode *root = rootOf(start.data());
++
++    QMutexLocker l(&store->lock);
++    for (int i = store->entries.size() - 1; i >= 0; i--) {
++        PsCacheEntrySP e = store->entries[i];
++        KisNodeSP pivot = e->pivot;
++        if (!pivot) {
++            store->killLocked(i);
++            continue;
++        }
++        if (e->root != root && rootOf(pivot.data()) != root) continue;   // another image
++        if (update && start && isSelfOrDescendant(start.data(), pivot.data())) continue;
++        store->killLocked(i);
++    }
++}
++
++/// A layer that can be merged with the layers above it into the above cache.
++bool psRunEligible(KisProjectionLeafSP leaf, const KisNode *level)
++{
++    KisNodeSP node = leaf->node();
++    if (!node || node->parent().data() != level) return false;      // flattened pass-through child
++    if (!leaf->isLayer() || leaf->dependsOnLowerNodes()) return false;
++    KisLayer *layer = qobject_cast<KisLayer*>(node.data());
++    if (!layer) return false;
++    KisGroupLayer *group = qobject_cast<KisGroupLayer*>(node.data());
++    if (group && group->effectivePassThroughMode()) return false;
++    if (psClip::clipFlag(node.data())) return false;
++    if (node->compositeOpId() != COMPOSITE_OVER) return false;
++    if (layer->layerStyle()) return false;
++    psBlendIf::Settings blendIf;
++    if (psBlendIf::findSettings(node.data(), blendIf)) return false;
++    const QBitArray flags = leaf->channelFlags();
++    if (!flags.isEmpty() && flags.count(true) != flags.size()) return false;
++    return true;
++}
++
++struct PsLevelPlan {
++    enum Mode { None, Fill, Hit };
++
++    const KisNode *level = nullptr;
++    int begin = -1, end = -1;            // pop-order indexes, inclusive
++    int pivot = -1;
++    QRect rect;
++    PsCacheEntrySP entry;
++    Mode below = None;
++    int runStart = -1;
++    Mode above = None;
++    KisPaintDeviceSP belowDevice;        // for a hit, read under the lock
++    KisPaintDeviceSP aboveDevice;
++};
++
++struct PsMergePlan {
++    QVector<int> levelOf;                // pop index -> level plan index or -1
++    QVector<PsLevelPlan> levels;
++
++    PsLevelPlan *at(int popIndex) {
++        if (popIndex < 0 || popIndex >= levelOf.size()) return nullptr;
++        const int l = levelOf[popIndex];
++        return l >= 0 ? &levels[l] : nullptr;
++    }
++};
++
++/// Decides, per level of this merge, whether the caches are filled or used.
++PsMergePlan psCachePlan(KisBaseRectsWalker &walker)
++{
++    PsMergePlan plan;
++    const int flags = psPerf::flags();
++    if (!(flags & (psPerf::BelowCache | psPerf::AboveCache))) return plan;
++    if (walker.type() != KisBaseRectsWalker::UPDATE) return plan;
++
++    PsCacheStore *store = PsCacheStore::instance();
++    if (walker.needRectVaries()) {
++        store->stats.skippedVaries++;
++        return plan;
++    }
++
++    const KisMergeWalker::LeafStack &stack = walker.leafStack();
++    const int n = stack.size();
++    QVector<KisMergeWalker::JobItem> items(n);
++    for (int i = 0; i < n; i++) items[i] = stack[n - 1 - i];       // pop order
++    plan.levelOf.fill(-1, n);
++
++    // levels: runs of ordinary items ending with the topmost one
++    int begin = -1;
++    for (int i = 0; i < n; i++) {
++        const KisMergeWalker::JobItem &it = items[i];
++        if (it.m_leaf->isRoot() || (it.m_position & KisMergeWalker::N_EXTRA)) {
++            begin = -1;
++            continue;
++        }
++        if (begin < 0) begin = i;
++        if ((it.m_position & KisMergeWalker::N_TOPMOST) || i == n - 1) {
++            PsLevelPlan lvl;
++            lvl.begin = begin;
++            lvl.end = i;
++            plan.levels.append(lvl);
++            begin = -1;
++        }
++    }
++
++    const KisNode *root = rootOf(walker.startNode().data());
++    const int lod = walker.levelOfDetail();
++
++    for (int li = 0; li < plan.levels.size(); li++) {
++        PsLevelPlan &lvl = plan.levels[li];
++        const KisMergeWalker::JobItem &first = items[lvl.begin];
++        KisProjectionLeafSP parentLeaf = first.m_leaf->parent();
++        if (!parentLeaf || !parentLeaf->node()) continue;
++        lvl.level = parentLeaf->node().data();
++        lvl.rect = first.m_applyRect;
++
++        bool uniform = true;
++        for (int i = lvl.begin; i <= lvl.end; i++) {
++            const KisMergeWalker::JobItem &it = items[i];
++            if (it.m_applyRect != lvl.rect) uniform = false;
++            if (it.m_position & (KisMergeWalker::N_FILTHY | KisMergeWalker::N_FILTHY_PROJECTION)) {
++                if (lvl.pivot >= 0) uniform = false;                // two pivots: leave it
++                lvl.pivot = i;
++            }
++        }
++        if (!uniform || lvl.pivot < 0 || lvl.rect.isEmpty()) continue;
++
++        KisNodeSP pivotNode = items[lvl.pivot].m_leaf->node();
++        if (!pivotNode) continue;
++
++        // below: worth it with two or more visible layers under the pivot,
++        // and only when nothing is left "open" at the pivot (it is not
++        // clipped, not inside a masked pass-through group)
++        int belowVisible = 0;
++        bool belowOk = (flags & psPerf::BelowCache) && !psClip::clipFlag(pivotNode.data());
++        for (int i = lvl.begin; i < lvl.pivot && belowOk; i++) {
++            if (!(items[i].m_position & KisMergeWalker::N_BELOW_FILTHY)) belowOk = false;
++            else if (items[i].m_leaf->visible()) belowVisible++;
++        }
++        for (KisNodeSP p = pivotNode->parent(); belowOk && p && p.data() != lvl.level; p = p->parent()) {
++            KisGroupLayer *g = passThroughGroup(p);
++            if (!g) break;
++            if (g->visible() && !passThroughGroupMasks(g).isEmpty()) belowOk = false;
++        }
++        if (belowVisible < 2) belowOk = false;
++
++        // above: the topmost layers, all plain Normal ones
++        int runStart = -1, runVisible = 0;
++        if (flags & psPerf::AboveCache) {
++            for (int i = lvl.end; i > lvl.pivot; i--) {
++                if (!(items[i].m_position & KisMergeWalker::N_ABOVE_FILTHY)) break;
++                if (!psRunEligible(items[i].m_leaf, lvl.level)) break;
++                runStart = i;
++                if (items[i].m_leaf->visible()) runVisible++;
++            }
++        }
++        if (runStart >= 0 && runVisible < 2) runStart = -1;
++
++        if (!belowOk && runStart < 0) continue;
++
++        QVector<const KisNode*> run;
++        for (int i = runStart; runStart >= 0 && i <= lvl.end; i++) {
++            run.append(items[i].m_leaf->node().data());
++        }
++
++        QMutexLocker l(&store->lock);
++        PsCacheEntrySP entry;
++        for (int i = store->entries.size() - 1; i >= 0; i--) {
++            PsCacheEntrySP e = store->entries[i];
++            KisNodeSP entryPivot = e->pivot;
++            if (!entryPivot) {
++                store->killLocked(i);
++                continue;
++            }
++            if (entryPivot.data() == pivotNode.data() && e->level == lvl.level && e->lod == lod) {
++                if (e->graphSeq != pivotNode->graphSequenceNumber() ||
++                    e->pivotClip != psClip::clipFlag(pivotNode.data())) {
++                    store->killLocked(i);
++                } else {
++                    entry = e;
++                }
++                break;
++            }
++        }
++        if (!entry) {
++            entry.reset(new PsCacheEntry());
++            entry->pivot = pivotNode;
++            entry->level = lvl.level;
++            entry->root = root;
++            entry->lod = lod;
++            entry->graphSeq = pivotNode->graphSequenceNumber();
++            entry->pivotClip = psClip::clipFlag(pivotNode.data());
++            store->entries.append(entry);
++            while (store->entries.size() > PsCacheStore::MaxEntries) {
++                int oldest = 0;
++                for (int i = 1; i < store->entries.size(); i++) {
++                    if (store->entries[i]->lastUse < store->entries[oldest]->lastUse) oldest = i;
++                }
++                store->killLocked(oldest);
++            }
++        }
++        entry->lastUse = ++store->clock;
++        lvl.entry = entry;
++
++        // (a colour space conversion is a full refresh, which drops the
++        // entries; this is only a safety net)
++        const KoColorSpace *levelCs = lvl.level->colorSpace();
++        if (entry->colorSpace && entry->colorSpace != levelCs) {
++            entry->below = nullptr;
++            entry->above = nullptr;
++            entry->belowValid = entry->aboveValid = QRegion();
++            entry->colorSpace = nullptr;
++        }
++
++        const QRegion want(lvl.rect);
++        if (belowOk) {
++            lvl.below = (want - entry->belowValid).isEmpty() && entry->below ? PsLevelPlan::Hit : PsLevelPlan::Fill;
++            if (lvl.below == PsLevelPlan::Hit) lvl.belowDevice = entry->below;
++        }
++        if (runStart >= 0) {
++            if (entry->run != run) {
++                entry->run = run;
++                entry->above = nullptr;
++                entry->aboveValid = QRegion();
++            }
++            lvl.runStart = runStart;
++            lvl.above = (want - entry->aboveValid).isEmpty() && entry->above ? PsLevelPlan::Hit : PsLevelPlan::Fill;
++            if (lvl.above == PsLevelPlan::Hit) lvl.aboveDevice = entry->above;
++        }
++        for (int i = lvl.begin; i <= lvl.end; i++) plan.levelOf[i] = li;
++    }
++    return plan;
++}
++
++/// The device of a cache entry, created on first use (under the lock).
++KisPaintDeviceSP psCacheDevice(const PsCacheEntrySP &entry, bool above, KisPaintDeviceSP prototype)
++{
++    PsCacheStore *store = PsCacheStore::instance();
++    QMutexLocker l(&store->lock);
++    KisPaintDeviceSP &dev = above ? entry->above : entry->below;
++    if (!entry->alive) return nullptr;
++    if (!dev) {
++        dev = new KisPaintDevice(prototype->colorSpace());
++        dev->prepareClone(prototype);
++        entry->colorSpace = prototype->colorSpace();
++    }
++    return dev;
++}
++
++/// Marks an area of the device as filled - unless the entry was dropped or
++/// got a new device meanwhile (a concurrent update).
++void psCacheMarkValid(const PsCacheEntrySP &entry, bool above, KisPaintDeviceSP device, const QRect &rect)
++{
++    PsCacheStore *store = PsCacheStore::instance();
++    QMutexLocker l(&store->lock);
++    if (!entry->alive) return;
++    if ((above ? entry->above : entry->below) != device) return;
++    QRegion &valid = above ? entry->aboveValid : entry->belowValid;
++    valid += rect;
++}
++
+ } // namespace
+ 
+ 
++/*********************************************************************/
++/*                     psPerf (kis_ps_perf.h)                        */
++/*********************************************************************/
++
++int psPerf::flags()
++{
++    return s_psPerfFlags.load(std::memory_order_relaxed);
++}
++
++void psPerf::setFlags(int flags)
++{
++    if (s_psPerfFlags.exchange(flags & psPerf::AllFlags) != (flags & psPerf::AllFlags)) {
++        dropCaches();
++    }
++}
++
++QString psPerf::stats()
++{
++    PsCacheStats &st = PsCacheStore::instance()->stats;
++    int entries = 0;
++    {
++        QMutexLocker l(&PsCacheStore::instance()->lock);
++        entries = PsCacheStore::instance()->entries.size();
++    }
++    return QString("flags=%1 belowHit=%2 belowFill=%3 aboveHit=%4 aboveFill=%5 dropped=%6 "
++                   "skippedVaries=%7 inconsistent=%8 entries=%9")
++        .arg(flags()).arg(st.belowHit.load()).arg(st.belowFill.load())
++        .arg(st.aboveHit.load()).arg(st.aboveFill.load()).arg(st.dropped.load())
++        .arg(st.skippedVaries.load()).arg(st.inconsistent.load()).arg(entries);
++}
++
++void psPerf::resetStats()
++{
++    PsCacheStats &st = PsCacheStore::instance()->stats;
++    st.belowHit = st.belowFill = st.aboveHit = st.aboveFill = 0;
++    st.dropped = st.skippedVaries = st.inconsistent = 0;
++}
++
++void psPerf::dropCaches()
++{
++    PsCacheStore::instance()->dropAll();
++}
++
+ /*********************************************************************/
+ /*                     KisAsyncMerger                                */
+ /*********************************************************************/
+@@ -329,9 +760,18 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
+     PassThroughScopes passThroughScopes;
+     ClipStack clipStack;
+ 
++    // ps_tools patch: Photoshop-like composite caches (see PsCacheEntry)
++    psCacheOnMergeStart(walker);
++    PsMergePlan psPlan = psCachePlan(walker);
++    PsCacheStats &psStats = PsCacheStore::instance()->stats;
++    KisPaintDeviceSP psAboveDevice;       // the run being filled
++    int popIndex = -1;
++
+     while(!leafStack.isEmpty()) {
+         KisMergeWalker::JobItem item = leafStack.pop();
+         KisProjectionLeafSP currentLeaf = item.m_leaf;
++        popIndex++;
++        PsLevelPlan *psLevel = psPlan.at(popIndex);
+ 
+         /**
+          * In some unidentified cases the nodes might be removed
+@@ -368,18 +808,84 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
+             setupProjection(currentLeaf, applyRect, useTempProjections);
+         }
+ 
++        // ps_tools patch: below cache hit - the layers below the pivot are
++        // not composited, their saved composite is copied at the pivot
++        if (psLevel && psLevel->below == PsLevelPlan::Hit && popIndex < psLevel->pivot) {
++            continue;
++        }
++
+         // ps_tools patch: the clipping stack ends at the first layer that is
+         // not clipped to its base
+         if (clipStack.base && !psClip::inStackOf(currentLeaf->node().data(), clipStack.base)) {
+             closeClipStack(clipStack, m_currentProjection);
+         }
+ 
++        // ps_tools patch: above cache hit - the merged top layers of the
++        // level are composited at once (they are all plain Normal layers)
++        if (psLevel && psLevel->above == PsLevelPlan::Hit && popIndex >= psLevel->runStart) {
++            if (popIndex == psLevel->runStart && m_currentProjection) {
++                KisPaintDeviceSP merged = psLevel->aboveDevice;
++                if (merged) {
++                    KisPainter gc(m_currentProjection);
++                    gc.setCompositeOpId(COMPOSITE_OVER);
++                    gc.bitBlt(applyRect.topLeft(), merged, applyRect);
++                }
++                psStats.aboveHit++;
++            }
++            if(item.m_position & KisMergeWalker::N_TOPMOST) {
++                closeClipStack(clipStack, m_currentProjection);
++                writeProjection(currentLeaf, useTempProjections, applyRect);
++                resetProjection();
++            }
++            continue;
++        }
++
+         if (m_currentProjection) {
+             openPassThroughScopes(currentLeaf->node(), applyRect, m_currentProjection, passThroughScopes);
+             closePassThroughScope(currentLeaf->node(), applyRect, m_currentProjection,
+                                   passThroughScopes, item.m_renderFlags);
+         }
+ 
++        // ps_tools patch: below cache at the pivot - restore (hit) or save
++        // (fill) the composite of everything below it on this level
++        if (psLevel && popIndex == psLevel->pivot && psLevel->below != PsLevelPlan::None) {
++            const bool consistent = !clipStack.base && passThroughScopes.isEmpty() && !useTempProjections;
++            if (!m_currentProjection) {
++                // the parent uses this layer's projection directly ("oblige
++                // child"): nothing is composited on this level anyway
++            } else if (psLevel->below == PsLevelPlan::Hit) {
++                KisPaintDeviceSP saved = psLevel->belowDevice;
++                if (saved) {
++                    KisPainter::copyAreaOptimized(applyRect.topLeft(), saved, m_currentProjection, applyRect);
++                }
++                psStats.belowHit++;
++                if (!consistent) {
++                    // cannot happen when the plan's checks hold: drop everything
++                    psStats.inconsistent++;
++                    PsCacheStore::instance()->dropAll();
++                }
++            } else if (!consistent) {
++                psStats.inconsistent++;
++                PsCacheStore::instance()->dropAll();
++            } else {
++                KisPaintDeviceSP saved = psCacheDevice(psLevel->entry, false, m_currentProjection);
++                if (saved) {
++                    KisPainter::copyAreaOptimized(applyRect.topLeft(), m_currentProjection, saved, applyRect);
++                    psCacheMarkValid(psLevel->entry, false, saved, applyRect);
++                    psStats.belowFill++;
++                }
++            }
++        }
++
++        // ps_tools patch: above cache fill - the run's layers are also
++        // composited into the merged device
++        if (psLevel && psLevel->above == PsLevelPlan::Fill && popIndex == psLevel->runStart) {
++            psAboveDevice = m_currentProjection ? psCacheDevice(psLevel->entry, true, m_currentProjection) : nullptr;
++            if (psAboveDevice) {
++                psAboveDevice->clear(applyRect);
++            }
++        }
++
+         KisUpdateOriginalVisitor originalVisitor(applyRect,
+                                                  m_currentProjection);
+ 
+@@ -421,6 +927,19 @@ void KisAsyncMerger::startMerge(KisBaseRectsWalker &walker, bool notifyClones) {
+ 
+         compositeWithProjection(currentLeaf, applyRect);
+ 
++        if (psAboveDevice && psLevel && psLevel->above == PsLevelPlan::Fill &&
++            popIndex >= psLevel->runStart) {
++            if (currentLeaf->visible()) {
++                KisPainter gc(psAboveDevice);
++                currentLeaf->projectionPlane()->apply(&gc, applyRect);
++            }
++            if (popIndex == psLevel->end) {
++                psCacheMarkValid(psLevel->entry, true, psAboveDevice, applyRect);
++                psStats.aboveFill++;
++                psAboveDevice = nullptr;
++            }
++        }
++
+         if(item.m_position & KisMergeWalker::N_TOPMOST) {
+             closeClipStack(clipStack, m_currentProjection);
+             writeProjection(currentLeaf, useTempProjections, applyRect);
+diff --git a/libs/image/kis_image.cc b/libs/image/kis_image.cc
+index 0c8aeee..3577d2a 100644
+--- a/libs/image/kis_image.cc
++++ b/libs/image/kis_image.cc
+@@ -798,6 +798,11 @@ bool KisImage::tryBarrierLock(bool readOnly)
+     return result;
+ }
+ 
++void KisImage::setPsPriorityRect(const QRect &rect)
++{
++    m_d->scheduler.setPsPriorityRect(rect);
++}
++
+ bool KisImage::hasOpenedStrokes() const
+ {
+     return m_d->scheduler.hasOpenedStrokes();
+diff --git a/libs/image/kis_image.h b/libs/image/kis_image.h
+index c086a2e..428d1c7 100644
+--- a/libs/image/kis_image.h
++++ b/libs/image/kis_image.h
+@@ -984,6 +984,9 @@ public:
+     /// ps_tools: a stroke is still open (see KisUpdateScheduler::hasOpenedStrokes())
+     bool hasOpenedStrokes() const;
+ 
++    /// ps_tools: the area shown on the canvas, rendered first (image pixels)
++    void setPsPriorityRect(const QRect &rect);
++
+     /**
+      * @brief Wait until all the queued background jobs are completed and lock the image.
+      *
+diff --git a/libs/image/kis_ps_perf.h b/libs/image/kis_ps_perf.h
+new file mode 100644
+index 0000000..3a0ff3c
+--- /dev/null
++++ b/libs/image/kis_ps_perf.h
+@@ -0,0 +1,49 @@
++/*
++ *  ps_tools patch: switches and counters of the Photoshop-like rendering
++ *  speed-ups (see kis_async_merger.cpp and kis_simple_update_queue.cpp).
++ *
++ *  The ps_tools plugin switches them with the application property
++ *  "ps_tools_perf" (the psfilters plugin passes it on), so a speed-up that
++ *  misbehaves can be turned off without a new build. Tests compare the
++ *  rendering with and without them.
++ *
++ *  SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef KIS_PS_PERF_H
++#define KIS_PS_PERF_H
++
++#include "kritaimage_export.h"
++
++#include <QString>
++
++namespace psPerf {
++
++enum Flag {
++    /// While one layer is painted / changed, what lies below it on its level
++    /// is kept composited (like Photoshop) instead of being composited again
++    /// for every dab.
++    BelowCache = 0x1,
++    /// The Normal-mode layers at the top of that level are kept merged into
++    /// one (Normal "over" is associative).
++    AboveCache = 0x2,
++    /// Updates of the part of the image visible on the canvas go first.
++    ViewportFirst = 0x4,
++    /// Clipping stacks reuse their buffers.
++    PooledStacks = 0x8,
++
++    AllFlags = 0xf
++};
++
++KRITAIMAGE_EXPORT int flags();
++KRITAIMAGE_EXPORT void setFlags(int flags);
++inline bool on(Flag f) { return flags() & f; }
++
++/// Counters for tests: "belowHit=.. belowFill=.. aboveHit=.. ..."
++KRITAIMAGE_EXPORT QString stats();
++KRITAIMAGE_EXPORT void resetStats();
++/// Drops every cached composite (tests; also when the flags change).
++KRITAIMAGE_EXPORT void dropCaches();
++
++}
++
++#endif
+diff --git a/libs/image/kis_simple_update_queue.cpp b/libs/image/kis_simple_update_queue.cpp
+index d441f90..de3a86a 100644
+--- a/libs/image/kis_simple_update_queue.cpp
++++ b/libs/image/kis_simple_update_queue.cpp
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include "kis_simple_update_queue.h"
++#include "kis_ps_perf.h"
+ 
+ #include <QMutexLocker>
+ #include <QVector>
+@@ -85,19 +86,44 @@ void KisSimpleUpdateQueue::processQueue(KisUpdaterContext &updaterContext)
+     updaterContext.unlock();
+ }
+ 
++void KisSimpleUpdateQueue::setPsPriorityRect(const QRect &rect)
++{
++    QMutexLocker locker(&m_lock);
++    m_psPriorityRect = rect;
++}
++
+ bool KisSimpleUpdateQueue::processOneJob(KisUpdaterContext &updaterContext)
+ {
+     QMutexLocker locker(&m_lock);
+ 
+     KisBaseRectsWalkerSP item;
+-    KisMutableWalkersListIterator iter(m_updatesList);
+     bool jobAdded = false;
+ 
+     int currentLevelOfDetail = updaterContext.currentLevelOfDetail();
+ 
++    /**
++     * ps_tools patch: like Photoshop, the area shown on the canvas is
++     * rendered first: a first pass takes only the updates that touch it.
++     * (The order of independent updates does not change the result: each
++     * one recomposites its area from the current layers.)
++     */
++    const bool psPriority = psPerf::on(psPerf::ViewportFirst) && !m_psPriorityRect.isEmpty() &&
++                            m_updatesList.size() > 1;
++
++    for (int pass = psPriority ? 0 : 1; pass < 2 && !jobAdded; pass++) {
++    KisMutableWalkersListIterator iter(m_updatesList);
++
+     while(iter.hasNext()) {
+         item = iter.next();
+ 
++        if (pass == 0) {
++            const int lod = item->levelOfDetail();
++            const QRect &pr = m_psPriorityRect;
++            const QRect visible = lod > 0 ?
++                QRect(pr.x() >> lod, pr.y() >> lod, (pr.width() >> lod) + 2, (pr.height() >> lod) + 2) : pr;
++            if (!item->requestedRect().intersects(visible)) continue;
++        }
++
+         if ((currentLevelOfDetail < 0 || currentLevelOfDetail == item->levelOfDetail()) &&
+             !item->checksumValid()) {
+ 
+@@ -115,6 +141,7 @@ bool KisSimpleUpdateQueue::processOneJob(KisUpdaterContext &updaterContext)
+             break;
+         }
+     }
++    }
+ 
+     if (jobAdded) return true;
+ 
+diff --git a/libs/image/kis_simple_update_queue.h b/libs/image/kis_simple_update_queue.h
+index b049034..e9e0795 100644
+--- a/libs/image/kis_simple_update_queue.h
++++ b/libs/image/kis_simple_update_queue.h
+@@ -63,6 +63,10 @@ public:
+ 
+     int overrideLevelOfDetail() const;
+ 
++    /// ps_tools patch: the part of the image (level-of-detail 0 pixels)
++    /// shown on the canvas; its updates are processed first
++    void setPsPriorityRect(const QRect &rect);
++
+ protected:
+     void addJob(KisNodeSP node, const QVector<QRect> &rects, const QRect& cropRect, int levelOfDetail, KisBaseRectsWalker::UpdateType type, bool dontInvalidateFrames);
+ 
+@@ -111,6 +115,8 @@ protected:
+     qreal m_maxMergeCollectAlpha;
+ 
+     int m_overrideLevelOfDetail;
++
++    QRect m_psPriorityRect;     // ps_tools patch
+ };
+ 
+ class KRITAIMAGE_EXPORT KisTestableSimpleUpdateQueue : public KisSimpleUpdateQueue
+diff --git a/libs/image/kis_update_scheduler.cpp b/libs/image/kis_update_scheduler.cpp
+index 0d59360..68c27e9 100644
+--- a/libs/image/kis_update_scheduler.cpp
++++ b/libs/image/kis_update_scheduler.cpp
+@@ -306,6 +306,11 @@ void KisUpdateScheduler::unlock(bool resetLodLevels)
+     processQueues();
+ }
+ 
++void KisUpdateScheduler::setPsPriorityRect(const QRect &rect)
++{
++    m_d->updatesQueue.setPsPriorityRect(rect);
++}
++
+ bool KisUpdateScheduler::hasOpenedStrokes() const
+ {
+     return m_d->strokesQueue.hasOpenedStrokes();
+diff --git a/libs/image/kis_update_scheduler.h b/libs/image/kis_update_scheduler.h
+index 2eda75c..c9e2f29 100644
+--- a/libs/image/kis_update_scheduler.h
++++ b/libs/image/kis_update_scheduler.h
+@@ -112,6 +112,9 @@ public:
+      */
+     bool hasOpenedStrokes() const;
+ 
++    /// ps_tools patch: see KisSimpleUpdateQueue::setPsPriorityRect()
++    void setPsPriorityRect(const QRect &rect);
++
+     /**
+      * Blocks all the updates from execution. It doesn't affect
+      * strokes execution in any way. This type of lock is supposed
+diff --git a/libs/ui/canvas/kis_canvas2.cpp b/libs/ui/canvas/kis_canvas2.cpp
+index 0d108e2..c1826ec 100644
+--- a/libs/ui/canvas/kis_canvas2.cpp
++++ b/libs/ui/canvas/kis_canvas2.cpp
+@@ -1341,6 +1341,14 @@ void KisCanvas2::slotUpdateRegionOfInterest()
+ 
+     m_d->regionOfInterest = proposedRoi & imageRect;
+ 
++    // ps_tools patch: what is shown on the canvas is rendered first
++    {
++        KisImageSP image = m_d->view->image();
++        if (image) {
++            image->setPsPriorityRect(m_d->coordinatesConverter->widgetRectInImagePixels().toAlignedRect() & imageRect);
++        }
++    }
++
+     if (m_d->regionOfInterest != oldRegionOfInterest) {
+         Q_EMIT sigRegionOfInterestChanged(m_d->regionOfInterest);
+     }

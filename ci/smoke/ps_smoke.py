@@ -171,6 +171,16 @@ def main(args):
         res["perf"] = benchmark(Krita.instance())
     except Exception:
         res["errors"].append("benchmark: " + traceback.format_exc())
+    # engine speed-ups (engine level 6): same pixels with and without them,
+    # then how much faster painting / adjustment changes are
+    try:
+        if (res.get("engine_level") or 0) >= 6:
+            res["cache"] = cache_check(Krita.instance())
+            res["ok_cache"] = res["cache"]["ok"]
+            res["perf_paint"] = paint_benchmark(Krita.instance())
+    except Exception:
+        res["ok_cache"] = False
+        res["errors"].append("cache check: " + traceback.format_exc())
     with open(os.path.join(out_dir, "smoke.json"), "w") as f:
         json.dump(res, f, indent=1)
     log(json.dumps(res))
@@ -373,4 +383,348 @@ def benchmark(k, w=3000, h=2000, stacks=6):
         out[label] = times
         d.close()
     out["size"] = "%dx%d, %d stacks (base + clipped layer + clipped curves)" % (w, h, stacks)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Engine speed-ups (kis_ps_perf.h): composite caches + visible area first
+# ---------------------------------------------------------------------------
+
+class Engine(object):
+    """Commands of the psfilters plugin (ps_engine_control.h)."""
+
+    def __init__(self):
+        from PyQt5.QtWidgets import QApplication
+        self.app = QApplication.instance()
+        self.n = 0
+
+    def cmd(self, text):
+        self.n += 1
+        self.app.setProperty("ps_tools_test", "#%d %s" % (self.n, text))
+        out = self.app.property("ps_tools_test_result")
+        out = str(out) if out is not None else "error: no answer"
+        if out.startswith("error"):
+            raise RuntimeError("%s -> %s" % (text, out))
+        return out
+
+    def uid(self, node):
+        return node.uniqueId().toString()
+
+    def dab(self, node, x, y, w, h, seed):
+        return self.cmd("dab %s %d %d %d %d %d" % (self.uid(node), x, y, w, h, seed))
+
+    def dabs(self, node, count, x, y, w, h, dx, dy, seed):
+        return self.cmd("dabs %s %d %d %d %d %d %d %d %d" % (self.uid(node), count, x, y, w, h, dx, dy, seed))
+
+    def dirty(self, node):
+        return self.cmd("dirty %s" % self.uid(node))
+
+    def stats(self):
+        out = {}
+        for part in self.cmd("stats").split():
+            k, _, v = part.partition("=")
+            try:
+                out[k] = int(v)
+            except ValueError:
+                out[k] = v
+        return out
+
+
+CW, CH = 700, 520          # larger than one 512 px update patch: parallel jobs
+
+
+def build_complex(k, eng):
+    """A photobash-like document with everything the caches must respect:
+    blend modes, opacity, hidden layers, isolated / pass-through / nested
+    groups, clipping stacks, Blend If, adjustment layers, masks."""
+    doc = k.createDocument(CW, CH, "cache", "RGBA", "U8", "", 72.0)
+    root = doc.rootNode()
+    N = {}
+    seed = [100]
+
+    def paint(name, parent=None, above=None, mode=None, opacity=None, rects=3):
+        n = doc.createNode(name, "paintlayer")
+        (parent or root).addChildNode(n, above)
+        if mode:
+            n.setBlendingMode(mode)
+        if opacity is not None:
+            n.setOpacity(opacity)
+        for i in range(rects):
+            seed[0] += 7
+            s = seed[0]
+            eng.dab(n, (s * 37) % (CW - 200), (s * 53) % (CH - 160), 120 + s % 180, 90 + s % 140, s)
+        N[name] = n
+        return n
+
+    def group(name, parent=None, above=None, passthrough=False):
+        g = doc.createGroupLayer(name)
+        (parent or root).addChildNode(g, above)
+        g.setPassThroughMode(passthrough)
+        N[name] = g
+        return g
+
+    def curves(name, parent=None, above=None, pts="0,0;0.5,0.7;1,1;"):
+        f = k.filter("perchannel")
+        cfg = f.configuration()
+        cfg.setProperty("curve0", pts)
+        f.setConfiguration(cfg)
+        sel = Selection()
+        sel.select(0, 0, CW, CH, 255)
+        n = doc.createFilterLayer(name, f, sel)
+        (parent or root).addChildNode(n, above)
+        N[name] = n
+        return n
+
+    bg = paint("Background", rects=0)
+    eng.dab(bg, 0, 0, CW, CH, 1)
+    a = paint("Multiply", above=bg, mode="multiply", opacity=200)
+    ga = group("Group A", above=a)
+    a1 = paint("A1", parent=ga)
+    a2 = paint("A2", parent=ga, above=a1, mode="screen")
+    ab = paint("A base", parent=ga, above=a2)
+    ac = paint("A clipped", parent=ga, above=ab)
+    ac.setInheritAlpha(True)
+    curves("A curves", parent=ga, above=ac)
+    gp = group("Group P", above=ga, passthrough=True)
+    p1 = paint("P1", parent=gp)
+    p2 = paint("P2 blendif", parent=gp, above=p1)
+    p2.addChildNode(doc.createTransparencyMask("Blend If (Gray | 0/0 255/255 | 60/120 255/255)"), None)
+    gi = group("Group PI", parent=gp, above=p2, passthrough=True)
+    pi1 = paint("PI1", parent=gi)
+    paint("PI2", parent=gi, above=pi1, mode="overlay")
+    lv = curves("Root curves", above=gp, pts="0,0;0.4,0.6;1,1;")
+    mid = paint("Mid", above=lv)
+    ov = paint("Overlay", above=mid, mode="overlay")
+    base = paint("Base", above=ov)
+    c1 = paint("C1", above=base)
+    c1.setInheritAlpha(True)
+    c2 = paint("C2", above=c1, mode="multiply")
+    c2.setInheritAlpha(True)
+    hid = paint("Hidden", above=c2)
+    hid.setVisible(False)
+    t1 = paint("Top1", above=hid)
+    t2 = paint("Top2", above=t1, opacity=180)
+    gt = group("Group T", above=t2)
+    paint("T1", parent=gt)
+    paint("Top3", above=gt)
+    doc.refreshProjection()
+    doc.waitForDone()
+    return doc, N
+
+
+def cache_script(N):
+    """(action, layer name, args...) - painting several times on the same
+    layer (the caches fill, then are used), changes elsewhere in between
+    (they must be dropped), every kind of layer as the painted one."""
+    S = []
+
+    def strokes(name, n, x, y, seed):
+        for i in range(n):
+            S.append(("dab", name, x + i * 23, y + i * 17, 140, 110, seed + i))
+
+    strokes("Mid", 4, 60, 60, 500)                  # middle of the root level
+    strokes("Top3", 3, 300, 200, 520)               # topmost layer
+    strokes("Background", 3, 100, 300, 540)         # bottom layer
+    strokes("A1", 3, 200, 100, 560)                 # inside an isolated group
+    strokes("PI1", 3, 350, 250, 580)                # nested pass-through groups
+    strokes("P2 blendif", 3, 150, 220, 600)         # Blend If layer
+    strokes("C1", 3, 420, 120, 620)                 # clipped layer
+    strokes("Base", 3, 380, 160, 640)               # base of a stack
+    strokes("T1", 3, 260, 330, 660)                 # inside a group of the top run
+    strokes("Top1", 3, 90, 380, 680)                # inside the top run
+    S.append(("visible", "Multiply", False))        # a change below "Mid"
+    strokes("Mid", 3, 80, 90, 700)
+    S.append(("opacity", "Top2", 90))               # a change above "Mid"
+    strokes("Mid", 3, 120, 110, 720)
+    S.append(("dab", "Overlay", 140, 140, 200, 150, 740))   # another layer
+    strokes("Mid", 2, 130, 130, 760)
+    S.append(("blend", "Top1", "multiply"))         # the run is not plain any more
+    strokes("Mid", 3, 160, 150, 780)
+    S.append(("blend", "Top1", "normal"))
+    strokes("Mid", 2, 170, 160, 800)
+    S.append(("curves", "Root curves", "0,0;0.3,0.8;1,1;"))  # adjustment changed
+    strokes("Mid", 2, 40, 260, 820)
+    S.append(("clip", "Mid", True))                 # the painted layer gets clipped
+    strokes("Mid", 2, 60, 280, 840)
+    S.append(("clip", "Mid", False))
+    strokes("Mid", 2, 70, 290, 860)
+    S.append(("passthrough", "Group A", True))      # group switches mode
+    strokes("A2", 3, 230, 150, 880)
+    S.append(("visible", "Hidden", True))
+    strokes("Top3", 2, 320, 210, 900)
+    S.append(("move", "Mid", "Top2"))               # the painted layer moves up
+    strokes("Mid", 3, 100, 120, 920)
+    S.append(("remove", "Overlay"))                 # a layer below goes away
+    strokes("Mid", 2, 110, 140, 940)
+    S.append(("dabs", "Mid", 12, 20, 20, 160, 120, 45, 30, 960))   # a long stroke, no waits
+    S.append(("dabs", "Top3", 10, 600, 20, 100, 100, -50, 40, 990))
+    return S
+
+
+def run_script(k, eng, flags, priority=None):
+    """Fresh document, the script, the projection after every step."""
+    eng.cmd("perf %d" % flags)
+    eng.cmd("drop")
+    eng.cmd("reset_stats")
+    doc, N = build_complex(k, eng)
+    if priority:
+        eng.cmd("priority %d %d %d %d" % priority)
+    shots = []
+    for step in cache_script(N):
+        act, name = step[0], step[1]
+        n = N.get(name)
+        if act == "dab":
+            eng.dab(n, *step[2:])
+        elif act == "dabs":
+            eng.dabs(n, *step[2:])
+        elif act == "visible":
+            n.setVisible(step[2])
+            eng.dirty(n)
+        elif act == "opacity":
+            n.setOpacity(step[2])
+            eng.dirty(n)
+        elif act == "blend":
+            n.setBlendingMode(step[2])
+            eng.dirty(n)
+        elif act == "clip":
+            n.setInheritAlpha(step[2])
+            eng.dirty(n)
+        elif act == "passthrough":
+            n.setPassThroughMode(step[2])
+            doc.refreshProjection()
+        elif act == "curves":
+            f = k.filter("perchannel")
+            cfg = f.configuration()
+            cfg.setProperty("curve0", step[2])
+            f.setConfiguration(cfg)
+            n.setFilter(f)
+        elif act == "move":
+            target = N[step[2]]
+            parent = n.parentNode()
+            n.remove()
+            doc.waitForDone()
+            parent.addChildNode(n, target)
+            eng.dirty(n)
+        elif act == "remove":
+            n.remove()
+            del N[name]
+        doc.waitForDone()
+        shots.append(bytes(doc.pixelData(0, 0, CW, CH)))
+    stats = eng.stats()
+    # the cached result must equal a full recomputation
+    before = shots[-1]
+    doc.refreshProjection()
+    doc.waitForDone()
+    full = bytes(doc.pixelData(0, 0, CW, CH))
+    doc.close()
+    eng.cmd("drop")
+    return shots, stats, diff(before, full)
+
+
+def diff(a, b):
+    """(pixels that differ, largest channel difference)."""
+    if a == b:
+        return (0, 0)
+    if len(a) != len(b):
+        return (-1, 255)
+    import array
+    x, y = array.array("B", a), array.array("B", b)
+    worst, count = 0, 0
+    for i in range(0, len(x), 4):
+        d = max(abs(x[i] - y[i]), abs(x[i + 1] - y[i + 1]),
+                abs(x[i + 2] - y[i + 2]), abs(x[i + 3] - y[i + 3]))
+        if d:
+            count += 1
+            worst = max(worst, d)
+    return (count, worst)
+
+
+def cache_check(k):
+    """The same script without speed-ups, with the below cache only (must
+    be exact) and with everything (the merged top layers may differ by
+    rounding: at most a few levels)."""
+    eng = Engine()
+    out = {}
+    ref, st0, full0 = run_script(k, eng, 0)
+    below, st1, full1 = run_script(k, eng, 0x1 | 0x4 | 0x8, priority=(200, 100, 300, 200))
+    allf, st2, full2 = run_script(k, eng, 0xF, priority=(0, 0, 250, 250))
+    out["steps"] = len(ref)
+    out["stats_off"], out["stats_below"], out["stats_all"] = st0, st1, st2
+    out["full_refresh_diff"] = [full0, full1, full2]
+    bad_below = [(i, diff(r, b)) for i, (r, b) in enumerate(zip(ref, below)) if r != b]
+    diffs_all = [diff(r, a) for r, a in zip(ref, allf)]
+    bad_all = [(i, d) for i, d in enumerate(diffs_all) if d[1] > 3]
+    out["below_mismatch_steps"] = bad_below[:10]
+    out["all_mismatch_steps"] = bad_all[:10]
+    out["all_max_diff"] = max([d[1] for d in diffs_all] or [0])
+    out["ok"] = (not bad_below and not bad_all
+                 and full0 == (0, 0) and full1 == (0, 0) and full2[1] <= 3
+                 and st1.get("belowHit", 0) > 0 and st2.get("aboveHit", 0) > 0
+                 and st1.get("inconsistent", 0) == 0 and st2.get("inconsistent", 0) == 0
+                 and st0.get("belowHit", 0) == 0)
+    eng.cmd("perf 15")
+    return out
+
+
+def paint_benchmark(k, w=4000, h=3000, layers=40):
+    """Seconds for a stroke of 150 dabs and for 4 changes of an adjustment
+    layer, in a big document with many layers, without / with the
+    speed-ups."""
+    import time
+    eng = Engine()
+    out = {}
+    for label, flags in (("off", 0), ("on", 0xF)):
+        eng.cmd("perf %d" % flags)
+        eng.cmd("drop")
+        eng.cmd("reset_stats")
+        doc = k.createDocument(w, h, "bench", "RGBA", "U8", "", 72.0)
+        root = doc.rootNode()
+        above = None
+        nodes = []
+        modes = ["normal", "normal", "multiply", "normal", "screen", "normal", "overlay", "normal"]
+        for i in range(layers):
+            n = doc.createNode("L%d" % i, "paintlayer")
+            root.addChildNode(n, above)
+            if i:
+                n.setBlendingMode(modes[i % len(modes)])
+            for j in range(6):
+                s = i * 13 + j * 7 + 1
+                eng.dab(n, (s * 397) % (w - 1500), (s * 211) % (h - 1200), 900 + s % 600, 700 + s % 500, s)
+            if i == 0:
+                eng.dab(n, 0, 0, w, h, 3)
+            nodes.append(n)
+            above = n
+            if i == 30:
+                f = k.filter("perchannel")
+                cfg = f.configuration()
+                cfg.setProperty("curve0", "0,0;0.5,0.6;1,1;")
+                f.setConfiguration(cfg)
+                sel = Selection()
+                sel.select(0, 0, w, h, 255)
+                adj = doc.createFilterLayer("Curves", f, sel)
+                root.addChildNode(adj, above)
+                above = adj
+        doc.refreshProjection()
+        doc.waitForDone()
+        res = {}
+        for name, node in (("paint_mid", nodes[20]), ("paint_top", nodes[-1]), ("paint_bottom", nodes[1])):
+            t0 = time.perf_counter()
+            eng.dabs(node, 150, 300, 300, 260, 260, 18, 11, 2000)
+            doc.waitForDone()
+            res[name] = round(time.perf_counter() - t0, 3)
+        t0 = time.perf_counter()
+        for i in range(4):
+            f = k.filter("perchannel")
+            cfg = f.configuration()
+            cfg.setProperty("curve0", "0,0;0.5,%.2f;1,1;" % (0.55 + i * 0.05))
+            f.setConfiguration(cfg)
+            adj.setFilter(f)
+            doc.waitForDone()
+        res["adjust_x4"] = round(time.perf_counter() - t0, 3)
+        res["stats"] = eng.cmd("stats")
+        out[label] = res
+        doc.close()
+    eng.cmd("perf 15")
+    eng.cmd("drop")
+    out["size"] = "%dx%d, %d layers + curves; 150 dabs of 260 px" % (w, h, layers)
     return out

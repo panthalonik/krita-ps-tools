@@ -110,6 +110,14 @@ Testy: python verification/test_clipping_native.py (21 testów).
 - Teraz grupa z Blend If jest rysowana jako jedna warstwa (izolowana, jak grupa z clippingiem) i cała jej zawartość jest wygaszana względem obrazu pod grupą — także dla grup w grupach. Wyłączenie Blend If (ukrycie / usunięcie maski) przywraca Pass Through.
 - PSD: Blend If grupy jest zapisywany na rekordzie grupy (nie na zamykającym „</Layer group>”), a przy imporcie grupa dostaje jedną maskę Blend If.
 
+## Wersja eksperymentalna — szybsze renderowanie (gałąź `experimental`, łatka `0011`)
+
+- Pamięć podręczna złożenia warstw, jak w Photoshopie: gdy malujesz po jednej warstwie (albo zmieniasz jedną warstwę korekcyjną), to, co leży pod nią, jest składane raz i potem tylko kopiowane; zwykłe warstwy (tryb Normal) na samej górze są trzymane jako jedna. Działa też dla grup i grup w grupach. Każda zmiana gdzie indziej (inna warstwa, widoczność, krycie, tryb, przesunięcie, usunięcie...) unieważnia pamięć.
+- Najpierw liczony jest obszar widoczny na ekranie, potem reszta obrazu.
+- Bufory stosów clippingu są używane ponownie.
+- Wyłączenie wszystkiego: Tools > Scripts > „Fast rendering (experimental, Krita PS)”.
+- Testy: ten sam scenariusz (malowanie po warstwach w grupach, w clippingu, z Blend If, pod i nad korekcjami; zmiany widoczności, krycia, trybu, clippingu, przesunięcia, usunięcia) jest liczony bez przyspieszeń i z nimi — obraz musi wyjść identyczny (połączone górne warstwy: różnica najwyżej o zaokrąglenie), a na końcu taki sam jak po pełnym przeliczeniu.
+
 ## Dokumenty ze starszej wersji
 
 Przy pierwszym otwarciu dokumentu wtyczka zamienia „Layer Mask” (lub ukryty magazyn) na maskę przezroczystości z tą samą zawartością, przywraca pełną wbudowaną maskę warstwy i przelicza Blend If. Po zapisaniu taki dokument nie będzie poprawnie obsługiwany przez starszą wersję wtyczki — przed pierwszym użyciem zrób kopię ważnych plików .kra.

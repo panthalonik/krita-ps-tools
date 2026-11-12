@@ -258,7 +258,8 @@ def engine_level():
     2 = + Blend If in the compositing engine,
     3 = + Photoshop clipping masks in the engine (and in PSD files),
     4 = + brush axis lock in C++,
-    5 = + clipping to Pass Through groups in the engine."""
+    5 = + clipping to Pass Through groups in the engine,
+    6 = + rendering speed-ups switched by "ps_tools_perf" (fastrender.py)."""
     try:
         from PyQt5.QtWidgets import QApplication
         v = QApplication.instance().property("ps_tools_engine")

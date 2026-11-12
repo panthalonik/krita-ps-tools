@@ -9,8 +9,8 @@ from PyQt5.QtGui import (QColor, QCursor, QKeySequence, QPainter, QPainterPath,
 from PyQt5.QtWidgets import (QAction, QApplication, QColorDialog, QDockWidget, QMenu,
                              QMessageBox, QToolButton, QTreeView)
 
-from . import (adjustments, axislock, brushbar, clip, core, groupmask, masks, optionsbar,
-               pslayers, side_strip)
+from . import (adjustments, axislock, brushbar, clip, core, fastrender, groupmask, masks,
+               optionsbar, pslayers, side_strip)
 from .widgets import adjustment_icon, make_icon
 from .dialog import BlendIfDialog, BlendIfSession
 
@@ -486,6 +486,14 @@ class PSToolsExtension(Extension):
         a.setChecked(axislock.enabled())
         a.toggled.connect(axislock.set_enabled)
         acts["ps_tools_shift_axis_lock"] = a
+        if fastrender.available():
+            a = window.createAction("ps_tools_fast_rendering",
+                                    u"Fast rendering (experimental, Krita PS)", "tools/scripts")
+            a.setCheckable(True)
+            a.setChecked(fastrender.enabled())
+            a.toggled.connect(fastrender.set_enabled)
+            acts["ps_tools_fast_rendering"] = a
+            fastrender.apply()
         self.my_actions = acts
         self._try_hook(window, 0)
         try:
@@ -663,6 +671,11 @@ class PSToolsExtension(Extension):
                 self._take_shortcuts()
             except Exception:
                 log("shortcut error: " + traceback.format_exc())
+        if self._shortcut_ticks % 3 == 1:
+            try:
+                fastrender.apply()            # engine speed-ups on / off
+            except Exception:
+                pass
         try:
             axislock.LOCK.tick()
         except Exception:

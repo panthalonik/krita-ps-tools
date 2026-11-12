@@ -2,7 +2,7 @@ name: Build Krita PS for Windows
 
 on:
   push:
-    branches: [main]
+    branches: [main, experimental]
     paths:
       - 'krita/**'
       - 'ci/**'
@@ -19,7 +19,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: build-windows
+  group: build-windows-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -89,7 +89,7 @@ jobs:
       - name: Smoke test (renders + PSD export)
         id: smoke
         continue-on-error: true
-        timeout-minutes: 10
+        timeout-minutes: 25
         shell: pwsh
         run: ci\smoke_test.ps1
 
@@ -112,4 +112,11 @@ jobs:
           Move-Item $zip.FullName $final
           $tag = "build-${{ github.run_number }}"
           $notes = "Krita 5.3.4.1 + PS tools, build ${{ github.run_number }} (commit ${{ github.sha }}).`n`nPobierz Krita-PS-*.zip, rozpakuj i uruchom bin\krita.exe. Szczegóły w README."
-          gh release create $tag $final C:\kb\out\ps_tools_plugin.zip --title "Krita PS build ${{ github.run_number }}" --notes $notes --target ${{ github.sha }}
+          if ("${{ github.ref_name }}" -eq "experimental") {
+            # experimental builds: a pre-release of their own, main stays as it is
+            $tag = "exp-${{ github.run_number }}"
+            $notes = "EKSPERYMENTALNY build (gałąź experimental, commit ${{ github.sha }}).`n`nSzybsze renderowanie (pamięć podręczna złożenia warstw, najpierw widoczny obszar). Wyłączenie: Tools > Scripts > Fast rendering (experimental, Krita PS). Stabilna wersja: najnowszy build-N."
+            gh release create $tag $final C:\kb\out\ps_tools_plugin.zip --title "Krita PS EXPERIMENTAL ${{ github.run_number }}" --notes $notes --target ${{ github.sha }} --prerelease
+          } else {
+            gh release create $tag $final C:\kb\out\ps_tools_plugin.zip --title "Krita PS build ${{ github.run_number }}" --notes $notes --target ${{ github.sha }}
+          }

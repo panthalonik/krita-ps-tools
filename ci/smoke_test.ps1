@@ -39,8 +39,8 @@ $job = Start-Job -ScriptBlock {
     & $exe -s ps_smoke -f main $outDir *> $logFile
     $LASTEXITCODE
 } -ArgumentList $runner.FullName, $runner.DirectoryName, $out, $log, ''
-if (-not (Wait-Job $job -Timeout 420)) {
-    Write-Host 'kritarunner did not finish in 7 minutes'
+if (-not (Wait-Job $job -Timeout 1200)) {
+    Write-Host 'kritarunner did not finish in 20 minutes'
     Stop-Job $job
     Get-Process kritarunner* -ErrorAction SilentlyContinue | Stop-Process -Force
 }
@@ -58,5 +58,6 @@ $psdStatus = $LASTEXITCODE
 $json = Get-Content (Join-Path $out 'smoke.json') -Raw | ConvertFrom-Json
 if (-not $json.ok_render) { Write-Host 'FAIL: rendering checks (Blend If / clipping) did not match'; exit 1 }
 if (-not $json.ok_groups) { Write-Host 'FAIL: Blend If / clipping / adjustment layers inside Pass Through groups'; exit 1 }
+if ($json.engine_level -ge 6 -and -not $json.ok_cache) { Write-Host 'FAIL: the rendering speed-ups changed the pixels (see "cache" in smoke.json)'; exit 1 }
 if (-not $json.ok_import) { Write-Host 'FAIL: the PSD did not import back with adjustment layers / clipping / Blend If'; exit 1 }
 exit $psdStatus
