@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+X-KDE-Library=dup_probe
+X-Python-2-Compatible=false
+Name=Duplicate Layer probe (CI)
+Comment=Times Duplicate Layer in the real Krita window and quits

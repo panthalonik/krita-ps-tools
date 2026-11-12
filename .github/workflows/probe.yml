@@ -1,4 +1,4 @@
-# Diagnostics only (no build, no release): runs .github/probe/*.py inside the
+# Diagnostics only (no build, no release): runs the probe plugin (.github/probe/gui) in the real Krita window of the
 # latest Krita PS release and inside the official Krita, to compare them.
 name: Probe
 
@@ -14,13 +14,13 @@ permissions:
   contents: read
 
 jobs:
-  probe:
+  gui:
     runs-on: windows-latest
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        flavor: [ps, stock]
+        flavor: [ps-plugin, ps, stock]
     steps:
       - uses: actions/checkout@v4
       - name: Get Krita
@@ -29,7 +29,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force C:\probe | Out-Null
-          if ('${{ matrix.flavor }}' -eq 'ps') {
+          if ('${{ matrix.flavor }}' -ne 'stock') {
             $tag = gh release list -L 20 --json tagName,isPrerelease -q '[.[] | select(.isPrerelease | not)][0].tagName'
             Write-Host "release: $tag"
             gh release download $tag -p 'Krita-PS-*.zip' -D C:\probe
@@ -41,29 +41,28 @@ jobs:
           }
           $zip = Get-ChildItem C:\probe -Filter *.zip | Select-Object -First 1
           7z x $zip.FullName -oC:\probe\k -y | Out-Null
-      - name: Run probe
+      - name: Run Krita with the probe plugin
         shell: pwsh
         run: |
-          $runner = Get-ChildItem -Recurse C:\probe\k -Include 'kritarunner.com', 'kritarunner_com.com' | Select-Object -First 1
-          Write-Host "kritarunner: $($runner.FullName)"
-          $pyLibs = Get-ChildItem -Recurse (Split-Path -Parent $runner.DirectoryName) -Directory -Filter 'krita-python-libs' | Select-Object -First 1
-          Copy-Item .github\probe\*.py $pyLibs.FullName -Force
-          $out = 'C:\probe\out'
-          New-Item -ItemType Directory -Force $out | Out-Null
-          $log = Join-Path $out 'runner.log'
-          $job = Start-Job -ScriptBlock {
-              param($exe, $dir, $outDir, $logFile)
-              Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-              Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
-              Set-Location $dir
-              & $exe -s dup_probe -f main $outDir *> $logFile
-          } -ArgumentList $runner.FullName, $runner.DirectoryName, $out, $log
-          if (-not (Wait-Job $job -Timeout 1500)) {
-              Write-Host 'probe did not finish'
-              Stop-Job $job
-              Get-Process kritarunner* -ErrorAction SilentlyContinue | Stop-Process -Force
+          $res = Join-Path $env:APPDATA 'krita'
+          $py = Join-Path $res 'pykrita'
+          New-Item -ItemType Directory -Force $py, (Join-Path $res 'actions') | Out-Null
+          Copy-Item -Recurse .github\probe\gui\dup_probe $py
+          Copy-Item .github\probe\gui\dup_probe.desktop $py
+          $enable = "enable_dup_probe=true"
+          if ('${{ matrix.flavor }}' -eq 'ps-plugin') {
+            Copy-Item -Recurse plugin\ps_tools $py
+            Copy-Item plugin\ps_tools.desktop $py
+            Copy-Item plugin\ps_tools.action (Join-Path $res 'actions')
+            $enable += "`nenable_ps_tools=true"
           }
-          Write-Host '--- runner log'
-          Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 60
-          Write-Host '--- probe.json'
-          Get-Content (Join-Path $out 'probe.json') -ErrorAction SilentlyContinue
+          Set-Content (Join-Path $env:LOCALAPPDATA 'kritarc') "[python]`n$enable`n"
+          $exe = Get-ChildItem -Recurse C:\probe\k -Filter 'krita.exe' | Select-Object -First 1
+          $env:PROBE_OUT = 'C:\probe\gui.json'
+          $p = Start-Process $exe.FullName -PassThru -RedirectStandardError C:\probe\krita.err -RedirectStandardOutput C:\probe\krita.out
+          if (-not $p.WaitForExit(900000)) { Write-Host 'Krita did not quit'; $p | Stop-Process -Force }
+          Write-Host '--- stderr (last lines)'
+          Get-Content C:\probe\krita.err -ErrorAction SilentlyContinue | Select-Object -Last 30
+          Write-Host '--- gui.json'
+          Get-Content C:\probe\gui.json -ErrorAction SilentlyContinue
+
