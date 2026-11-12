@@ -61,7 +61,7 @@ jobs:
           $env:PROBE_OUT = 'C:\probe\gui.json'
           python .github\probe\make_png.py C:\probe\depth16.png
           $env:PROBE_PNG = 'C:\probe\depth16.png'
-          $env:PROBE_OPEN = '1'
+          $env:PROBE_OPEN = 'png'
           $p = Start-Process $exe.FullName -PassThru -RedirectStandardError C:\probe\krita.err -RedirectStandardOutput C:\probe\krita.out
           if (-not $p.WaitForExit(1500000)) { Write-Host 'Krita did not quit'; $p | Stop-Process -Force }
           Write-Host '--- stderr (last lines)'

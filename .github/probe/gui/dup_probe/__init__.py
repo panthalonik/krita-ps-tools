@@ -307,11 +307,31 @@ class OpenMixin(object):
         base = os.path.dirname(OUT)
         kra, psd = os.path.join(base, "big.kra"), os.path.join(base, "big.psd")
         t = pc()
-        big_document(k, kra, psd)
+        if os.environ.get("PROBE_OPEN") == "png":
+            from krita import InfoObject
+            rgb8 = os.path.join(base, "photo8.png")
+            d = k.createDocument(N, N, "photo", "RGBA", "U8", "", 300.0)
+            n = d.rootNode().childNodes()[0]
+            n.setPixelData(photo(5), 0, 0, N, N)
+            d.waitForDone()
+            k.setBatchmode(True)
+            try:
+                d.setBatchmode(True)
+                info = InfoObject()
+                info.setProperty("alpha", False)
+                d.exportImage(rgb8, info)
+            finally:
+                k.setBatchmode(False)
+            d.setModified(False)
+            d.close()
+            files = (("png_rgb8", rgb8), ("png_grey16", os.environ["PROBE_PNG"]), ("png_rgb8_again", rgb8))
+        else:
+            big_document(k, kra, psd)
+            files = (("kra", kra), ("psd", psd), ("kra_again", kra))
         RES["make_files"] = round(pc() - t, 1)
-        RES["file_mb"] = {p: round(os.path.getsize(p) / 1e6, 1) for p in (kra, psd) if os.path.exists(p)}
+        RES["file_mb"] = {p: round(os.path.getsize(p) / 1e6, 1) for _l, p in files if os.path.exists(p)}
         yield 3.0
-        for label, path in (("kra", kra), ("psd", psd), ("kra_again", kra)):
+        for label, path in files:
             if not os.path.exists(path):
                 continue
             prof = cProfile.Profile()
