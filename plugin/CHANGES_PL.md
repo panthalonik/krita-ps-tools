@@ -110,6 +110,16 @@ Testy: python verification/test_clipping_native.py (21 testów).
 - Teraz grupa z Blend If jest rysowana jako jedna warstwa (izolowana, jak grupa z clippingiem) i cała jej zawartość jest wygaszana względem obrazu pod grupą — także dla grup w grupach. Wyłączenie Blend If (ukrycie / usunięcie maski) przywraca Pass Through.
 - PSD: Blend If grupy jest zapisywany na rekordzie grupy (nie na zamykającym „</Layer group>”), a przy imporcie grupa dostaje jedną maskę Blend If.
 
+## Wersja en16 — Camera Raw Filter i panel Color jak w Photoshopie
+
+- **Camera Raw Filter** (filtr C++ `pscameraraw`, Krita PS): zakładki Light (Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Curve parametryczna i punktowa RGB / R / G / B, przycisk Auto), Color (White balance: As Shot / Auto / Custom, Temperature, Tint, „Neutral = foreground colour”, Vibrance, Saturation, Color Mixer HSL dla 8 kolorów, Color Grading z kołem dla Shadows / Midtones / Highlights / Global, Blending, Balance), Effects (Texture, Clarity, Dehaze, Vignette ze stylami, Grain) i Detail (Sharpening z Radius / Detail / Masking, Noise Reduction, Color Noise Reduction).
+  - Filter > Camera Raw Filter… (Shift+Ctrl+A; Deselect dostaje wtedy Ctrl+D jak w PS, jeśli Ctrl+D jest wolne) dodaje do warstwy maskę filtra „Camera Raw Filter” — jak Smart Filter: można ją otworzyć i zmienić później (Shift+Ctrl+A albo panel Properties). W menu warstw korekcyjnych jest też „Camera Raw…” (warstwa działająca na wszystko pod nią).
+  - Podglądem jest płótno (na żywo); OK / Cancel / Preview (P) / Reset All; dwuklik na suwaku przywraca wartość domyślną.
+  - Algorytmy Adobe nie są publiczne — to bliskie odpowiedniki (guided filter, dark channel, OKLab); suwaki mają te same nazwy, zakresy i kierunki. Działa w 8/16-bit i float, z Instant Preview.
+  - PSD: Photoshop nie ma warstwy korekcyjnej Camera Raw — taka warstwa zapisuje się w PSD jako piksele.
+- **Panel „Color (PS)”** (Settings > Dockers): kwadraty koloru pierwszego planu i tła (pod nimi czarny/biały i zamiana), pole nasycenia/jasności i pasek odcienia. Kliknięcie aktywnego kwadratu otwiera **Color Picker** jak w Photoshopie: pole + pasek zależny od wybranego przycisku (H, S, B, R, G, B, L, a, b), new / current, pola H S B / R G B / L a b / C M Y K / #, Only Web Colors, Add to Swatches (próbki pod panelem: klik = kolor, Ctrl+klik = tło, Alt+klik = usuń). CMYK liczony prostym wzorem (bez profilu drukarskiego, więc liczby różnią się od Photoshopa).
+- Testy: jądro Camera Raw (kafelki dają ten sam wynik co cały obraz, każdy suwak w dobrą stronę, brak NaN), panele z prawdziwym PyQt5, pole/pasek Color Pickera w każdym trybie, test w zbudowanej Kricie (warstwa i maska, 8 i 16 bit).
+
 ## Dokumenty ze starszej wersji
 
 Przy pierwszym otwarciu dokumentu wtyczka zamienia „Layer Mask” (lub ukryty magazyn) na maskę przezroczystości z tą samą zawartością, przywraca pełną wbudowaną maskę warstwy i przelicza Blend If. Po zapisaniu taki dokument nie będzie poprawnie obsługiwany przez starszą wersję wtyczki — przed pierwszym użyciem zrób kopię ważnych plików .kra.

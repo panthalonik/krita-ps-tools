@@ -16,6 +16,7 @@
 #include <klocalizedstring.h>
 
 #include "filter/kis_color_transformation_filter.h"
+#include "filter/kis_filter.h"
 
 class KritaPsFilters : public QObject
 {
@@ -55,6 +56,23 @@ public:
     KisFilterPsBlendIf();
     KoColorTransformation *createTransformation(const KoColorSpace *cs, const KisFilterConfigurationSP config) const override;
     static inline KoID id() { return KoID("psblendif", i18n("Blend If: This Layer (PS)")); }
+};
+
+/// Camera Raw Filter: the Light, Color, Effects and Detail panels of Adobe
+/// Camera Raw (ps_cameraraw.h). Properties: the slider names of
+/// ps::cr::settingNames() (numbers) and curve_rgb / curve_red / curve_green /
+/// curve_blue ("x,y;x,y;..." in 0..1). Highlights / Shadows, Clarity,
+/// Texture, Dehaze, sharpening and noise reduction look at the pixels around,
+/// so the filter asks Krita for a border of context (neededRect).
+class KisFilterPsCameraRaw : public KisFilter
+{
+public:
+    KisFilterPsCameraRaw();
+    void processImpl(KisPaintDeviceSP device, const QRect &applyRect, const KisFilterConfigurationSP config,
+                     KoUpdater *progressUpdater) const override;
+    QRect neededRect(const QRect &rect, const KisFilterConfigurationSP config, int lod) const override;
+    QRect changedRect(const QRect &rect, const KisFilterConfigurationSP config, int lod) const override;
+    static inline KoID id() { return KoID("pscameraraw", i18n("Camera Raw Filter (PS)")); }
 };
 
 #endif

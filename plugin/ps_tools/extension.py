@@ -76,6 +76,11 @@ def refresh_blend_if():
     autorefresh.refresh_everything(doc)
 
 
+def open_camera_raw():
+    from . import camera_raw
+    camera_raw.open_filter()
+
+
 def smart_convert():
     from . import smart
     try:
@@ -121,11 +126,15 @@ def create_adjustment(kind):
         _warn(u"Could not create the layer (is a document open?).")
         return
     show_properties_docker()
+    if kind == "camera_raw":
+        from . import camera_raw
+        camera_raw.open_layer(node, created=True)
     if kind in ("gradient", "pattern"):
         Krita.instance().action("layer_properties").trigger()
 
 
 def adjustment_menu(parent):
+    adjustments.refresh_unavailable()
     menu = QMenu(parent)
     menu.setToolTipsVisible(True)
     for item in adjustments.MENU:
@@ -460,6 +469,7 @@ class PSToolsExtension(Extension):
             ("ps_tools_smart_edit", u"Edit Smart Object Contents", smart_edit),
             ("ps_tools_brush_picker", u"Brush Preset Picker (at cursor)",
              brushbar.BAR.open_at_cursor),
+            ("ps_tools_camera_raw", u"Camera Raw Filter…", open_camera_raw),
         ]
         log("Krita %s, plugin loaded" % Krita.instance().version())
         acts = {}
@@ -569,12 +579,56 @@ class PSToolsExtension(Extension):
             mine.setShortcut(ks)
             log("%s assigned" % keys)
 
+    def _filter_menu(self, bar):
+        """Filter > Camera Raw Filter... at the top of Krita's Filter menu
+        (where Photoshop has it)."""
+        mine = self._my_action("ps_tools_camera_raw")
+        if mine is None:
+            return
+        for a in bar.actions():
+            m = a.menu()
+            if m is None or a.text().replace("&", "").strip().lower() != "filter":
+                continue
+            if mine not in m.actions():
+                first = m.actions()[0] if m.actions() else None
+                m.insertAction(first, mine)
+                if first is not None:
+                    m.insertSeparator(first)
+            return
+
+    def _camera_raw_shortcut(self):
+        """Shift+Ctrl+A = Camera Raw Filter (PS). In Krita it is Deselect, so
+        Deselect gets Photoshop's Ctrl+D - only when Ctrl+D is free and the
+        user has not changed these shortcuts."""
+        if getattr(self, "_cr_done", False):
+            return
+        mine = self._my_action("ps_tools_camera_raw")
+        if mine is None or not mine.shortcut().isEmpty():
+            self._cr_done = mine is not None
+            return
+        ks, ctrl_d = QKeySequence("Ctrl+Shift+A"), QKeySequence("Ctrl+D")
+        k = Krita.instance()
+        deselect = k.action("deselect")
+        try:
+            used_d = any(a.shortcut() == ctrl_d for a in k.actions())
+            used_a = [a for a in k.actions() if a.shortcut() == ks and a is not mine]
+        except Exception:
+            return
+        if not used_a:
+            mine.setShortcut(ks)
+        elif deselect is not None and used_a == [deselect] and not used_d:
+            deselect.setShortcut(ctrl_d)
+            mine.setShortcut(ks)
+            log("Shift+Ctrl+A = Camera Raw, Deselect = Ctrl+D")
+        self._cr_done = True
+
     def _take_shortcuts(self):
         """Ctrl+Alt+G = clipping mask (like PS), taken from Krita's Quick
         Ungroup; Ctrl+G = our Quick Group that keeps clipping stacks whole."""
         self._take_shortcut("ps_tools_clip", "Ctrl+Alt+G", "quick_ungroup")
         self._take_shortcut("ps_tools_group", "Ctrl+G", "create_quick_group",
                             must_take=True)
+        self._camera_raw_shortcut()
         self._menu_ticks = getattr(self, "_menu_ticks", 0) + 1
         if self._menu_ticks % 10 == 1:          # main menu: now and then
             try:
@@ -583,6 +637,7 @@ class PSToolsExtension(Extension):
                     if qwin is not None and qwin.menuBar() is not None:
                         for m in qwin.menuBar().findChildren(QMenu):
                             self.swap_group_action(m, deep=False)
+                        self._filter_menu(qwin.menuBar())
             except Exception:
                 log("menu error: " + traceback.format_exc())
 

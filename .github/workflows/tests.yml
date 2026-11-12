@@ -24,6 +24,11 @@ jobs:
         run: |
           cd plugin
           for t in verification/test_*.py; do echo "== $t"; python "$t"; done
+      - name: Screenshots (base64 in the log)
+        continue-on-error: true
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: cd plugin && python verification/screens.py
       - name: Plugin zip accepted by Krita's importer
         run: |
           python ci/make_plugin_zip.py /tmp/ps_tools_plugin.zip
@@ -34,3 +39,7 @@ jobs:
           python krita/plugins/filters/psfilters/tests/gen_reference.py plugin/ps_tools /tmp/vectors
           g++ -O2 -std=c++17 -Wall -Wextra -o /tmp/test_kernels krita/plugins/filters/psfilters/tests/test_kernels.cpp
           /tmp/test_kernels /tmp/vectors
+      - name: Camera Raw kernel tests (tiles, directions, NaN)
+        run: |
+          g++ -O2 -std=c++17 -Wall -Wextra -o /tmp/cameraraw_cli krita/plugins/filters/psfilters/tests/cameraraw_cli.cpp
+          python krita/plugins/filters/psfilters/tests/test_cameraraw.py /tmp/cameraraw_cli

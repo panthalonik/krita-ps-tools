@@ -127,7 +127,8 @@ def install():
         def instance():
             return Krita
     m.Krita = Krita
-    m.Selection = m.InfoObject = m.Extension = m.DockWidget = object
+    m.Selection = m.InfoObject = m.Extension = m.DockWidget = m.ManagedColor = object
+    m.DockWidgetFactory = m.DockWidgetFactoryBase = object
     sys.modules["krita"] = m
 
 
