@@ -24,11 +24,78 @@ def save():
         json.dump(RES, f, indent=1)
 
 
-def fill(node, seed):
-    row = bytearray(N * 4)
-    for x in range(N):
-        row[x * 4:x * 4 + 4] = bytes(((x * 3 + seed) & 255, (x * 5 + seed) & 255, (x + seed * 7) & 255, 255))
+def fill(node, seed, depth=8):
+    if depth == 8:
+        row = bytearray(N * 4)
+        for x in range(N):
+            row[x * 4:x * 4 + 4] = bytes(((x * 3 + seed) & 255, (x * 5 + seed) & 255, (x + seed * 7) & 255, 255))
+    else:
+        row = bytearray(N * 8)
+        for x in range(N):
+            v = (((x * 3 + seed) & 255) * 257, ((x * 5 + seed) & 255) * 257, ((x + seed * 7) & 255) * 257, 65535)
+            row[x * 8:x * 8 + 8] = b"".join(c.to_bytes(2, "little") for c in v)
     node.setPixelData(bytes(row) * N, 0, 0, N, N)
+
+
+def filter_layer(k, doc, name, fid, props):
+    from krita import Selection
+    f = k.filter(fid)
+    cfg = f.configuration()
+    for key, v in props.items():
+        cfg.setProperty(key, v)
+    f.setConfiguration(cfg)
+    sel = Selection()
+    sel.select(0, 0, N, N, 255)
+    return doc.createFilterLayer(name, f, sel)
+
+
+CAMERA_RAW = {"exposure": 0.3, "contrast": 10, "highlights": -30, "shadows": 25, "clarity": 30,
+              "texture": 20, "dehaze": 15, "vibrance": 15, "sharp_amount": 40, "nr_lum": 20}
+
+
+def build(k, scenario):
+    depth = 16 if "u16" in scenario else 8
+    doc = k.createDocument(N, N, scenario, "RGBA", "U16" if depth == 16 else "U8", "", 300.0)
+    root = doc.rootNode()
+    bg = root.childNodes()[0]
+    fill(bg, 1, depth)
+    parent = root
+    if "group" in scenario:
+        g = doc.createGroupLayer("Grupa")
+        root.addChildNode(g, bg)
+        parent = g
+        if "blendif" in scenario:
+            g.addChildNode(doc.createTransparencyMask("Blend If (Gray | 20/60 255/255 | 0/0 255/255)"), None)
+    lay = doc.createNode("Obraz", "paintlayer")
+    parent.addChildNode(lay, None if parent is not root else bg)
+    fill(lay, 3, depth)
+    above = lay
+    if "layers10" in scenario:
+        for i in range(8):
+            n = doc.createNode("L%d" % i, "paintlayer")
+            parent.addChildNode(n, above)
+            fill(n, 10 + i, depth)
+            n.setOpacity(128)
+            above = n
+    if "adjust" in scenario:
+        for name, fid, props in (("Curves", "perchannel", {"curve0": "0,0;0.5,0.6;1,1;"}),
+                                 ("Hue/Saturation", "hsvadjustment", {"s": 20}),
+                                 ("Levels", "levels", {})):
+            n = filter_layer(k, doc, name, fid, props)
+            parent.addChildNode(n, above)
+            above = n
+    if "cameraraw" in scenario:
+        from krita import Selection
+        f = k.filter("pscameraraw")
+        cfg = f.configuration()
+        for key, v in CAMERA_RAW.items():
+            cfg.setProperty(key, float(v))
+        f.setConfiguration(cfg)
+        sel = Selection()
+        sel.select(0, 0, N, N, 255)
+        lay.addChildNode(doc.createFilterMask("Camera Raw Filter", f, sel), None)
+    doc.waitForDone()
+    return doc, lay
 
 
 class Probe(object):
@@ -72,7 +139,7 @@ class Probe(object):
     # ------------------------------------------------ one measured duplicate
     def duplicate(self, label, profile=False):
         k, doc, lay = self.k, self.doc, self.lay
-        root = doc.rootNode()
+        root = lay.parentNode()
         old = set(n.uniqueId().toString() for n in root.childNodes())
         doc.setActiveNode(lay)
         yield 0.7
@@ -86,7 +153,10 @@ class Probe(object):
         t = pc()
         k.action("duplicatelayer").trigger()
         trig = pc() - t
-        yield 3.0
+        t_end = pc() + 30
+        while pc() < t_end and self.watch.get("idle") is None:
+            yield 0.1
+        yield 1.0
         if prof:
             prof.disable()
         self.timer.stop()
@@ -101,6 +171,7 @@ class Probe(object):
             s = io.StringIO()
             pstats.Stats(prof, stream=s).sort_stats("cumulative").print_stats(30)
             r["python_profile"] = s.getvalue().splitlines()[:70]
+        r["idle_before_trigger"] = bool(w.get("pre_idle", True))
         RES["runs"].setdefault(label, []).append(r)
         save()
         for n in root.childNodes():
@@ -116,49 +187,29 @@ class Probe(object):
         RES["extensions"] = [type(e).__module__ for e in k.extensions()]
         win = k.activeWindow()
         win.qwindow().showMaximized()
-        doc = k.createDocument(N, N, "dup", "RGBA", "U8", "", 300.0)
-        root = doc.rootNode()
-        fill(root.childNodes()[0], 1)
-        lay = doc.createNode("Obraz", "paintlayer")
-        root.addChildNode(lay, root.childNodes()[0])
-        fill(lay, 3)
-        doc.waitForDone()
-        win.addView(doc)
-        k.setActiveDocument(doc)
-        self.doc, self.lay = doc, lay
-        yield 5.0
-        RES["dockers"] = [d.objectName() for d in win.dockers() if d.isVisible()]
-        try:
-            RES["instant_preview"] = k.action("level_of_detail_mode").isChecked()
-        except Exception:
-            pass
-        for i in range(3):
-            yield from self.duplicate("default", profile=(i == 0))
-        try:
-            k.action("level_of_detail_mode").trigger()
-            yield 1.0
-            lbl = "instant_preview_%s" % k.action("level_of_detail_mode").isChecked()
-            for _ in range(2):
-                yield from self.duplicate(lbl)
-            k.action("level_of_detail_mode").trigger()
-            yield 1.0
-        except Exception:
-            RES["errors"].append(traceback.format_exc())
-        shown = [d for d in win.dockers() if d.isVisible()]
-        for d in shown:
-            d.hide()
-        yield 1.0
-        for _ in range(2):
-            yield from self.duplicate("no_dockers")
-        for d in shown:
-            d.show()
-            yield 1.0
-            yield from self.duplicate("only_" + (d.objectName() or "?"))
-            d.hide()
-            yield 0.5
-        for d in shown:
-            d.show()
-        doc.setModified(False)
+        scenarios = ["u8_plain", "u16_plain", "u8_layers10", "u8_adjust", "u8_group_blendif",
+                     "u8_cameraraw", "u8_layers10_adjust_group"]
+        if "pscameraraw" not in k.filters():
+            scenarios.remove("u8_cameraraw")
+        for sc in scenarios:
+            try:
+                t = pc()
+                doc, lay = build(k, sc)
+                view = win.addView(doc)
+                k.setActiveDocument(doc)
+                self.doc, self.lay = doc, lay
+                yield 4.0
+                RES.setdefault("build", {})[sc] = round(pc() - t, 1)
+                RES["dockers"] = [d.objectName() for d in win.dockers() if d.isVisible()]
+                for i in range(2):
+                    yield from self.duplicate(sc, profile=(i == 0 and sc == "u8_plain"))
+                doc.setModified(False)
+                view.close()
+                doc.close()
+                yield 1.0
+            except Exception:
+                RES["errors"].append(sc + ": " + traceback.format_exc())
+                save()
 
 
 class DupProbe(Extension):
